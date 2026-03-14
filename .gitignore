@@ -1,1 +1,3 @@
 venv/
+.vscode/
+Model/Code/audioencodergpu.py
