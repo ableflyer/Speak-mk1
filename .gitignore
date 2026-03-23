@@ -1,3 +1,6 @@
 venv/
 .vscode/
 Model/Code/audioencodergpu.py
+Model/Code/__pycache__
+Model/Code/.pytest_cache
+Model/Data/PhonemeDatasets
