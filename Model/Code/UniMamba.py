@@ -18,13 +18,14 @@ class RMSNorm(nn.Module):
         norm = x_fp32.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
         return (x_fp32 * norm).to(orig_dtype) * self.weight
 
+
 class RoPE(nn.Module):
     def __init__(self, dim: int, max_seq_len: int = 4096):
         super().__init__()
         self.dim = dim
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
         self.register_buffer("inv_freq", inv_freq)
- 
+
     def forward(self, x):
         """
         x: (batch, seq_len, dim)
@@ -36,31 +37,42 @@ class RoPE(nn.Module):
         emb = torch.cat([freqs, freqs], dim=-1)         # (T, D)
         cos = emb.cos().unsqueeze(0).to(x.dtype)        # (1, T, D)
         sin = emb.sin().unsqueeze(0).to(x.dtype)        # (1, T, D)
- 
+
         # Rotate half
         x1, x2 = x[..., :D//2], x[..., D//2:]
         x_rot = torch.cat([-x2, x1], dim=-1)
         return x * cos + x_rot * sin
 
+
 class MIMO(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.proj = nn.Linear(dim, dim, bias=False)
- 
+
     def forward(self, x):
         return self.proj(x)
+
 
 class UniMamba(nn.Module):
     """
     Uni-Mamba block as shown in diagram (b):
-    
+
     Input → RMS-Norm → Linear Proj → MIMO → RMS-Norm → RoPE → [A, X, B, C] → SSM → Y → Multiply → MIMO → Linear Proj → Output
                                   └→ Linear Proj → MIMO → SILU ──────────────────────────────────────────────────────────────↑
+
+    Args:
+        d_model:    hidden dimension (replaces old `dim` parameter)
+        d_state:    SSM state size (alias: dstate)
+        d_conv:     accepted for API compatibility with AudioEncoderConfig; not used
+                    internally since UniMamba uses a purely linear (no-conv) stem.
+        expand:     accepted for API compatibility; inner dim is fixed to nheads*headdim.
     """
     def __init__(
         self,
-        dim: int,
-        dstate: int = 64,
+        d_model: int,
+        d_state: int = 64,
+        d_conv: int = 4,        # accepted for compat, not used internally
+        expand: int = 2,        # accepted for compat, not used internally
         nheads: int = 8,
         headdim: int = None,
         ngroups: int = 1,
@@ -71,25 +83,25 @@ class UniMamba(nn.Module):
         eps: float = 1e-6,
     ):
         super().__init__()
-        assert dim % nheads == 0
-        self.dim = dim
-        self.dstate = dstate
+        assert d_model % nheads == 0
+        self.d_model = d_model
+        self.dstate = d_state
         self.nheads = nheads
-        self.headdim = headdim if headdim is not None else dim // nheads
+        self.headdim = headdim if headdim is not None else d_model // nheads
         self.ngroups = ngroups
         self.chunk_size = chunk_size
 
         # --- Pre-norm ---
-        self.norm = RMSNorm(dim, eps=eps)
+        self.norm = RMSNorm(d_model, eps=eps)
 
         # --- SSM branch ---
         # Projects input into the SSM space: x, B, C projections
         # x: (nheads * headdim), B: (ngroups * dstate), C: (ngroups * dstate)
         ssm_in_dim = self.nheads * self.headdim + 2 * self.ngroups * self.dstate
-        self.in_proj = nn.Linear(dim, ssm_in_dim, bias=False)   # Linear Proj (SSM branch)
-        self.in_mimo = MIMO(ssm_in_dim)                          # MIMO after first Linear Proj
-        self.ssm_norm = RMSNorm(ssm_in_dim, eps=eps)             # Second RMS-Norm before RoPE
-        self.rope = RoPE(ssm_in_dim)                             # RoPE
+        self.in_proj = nn.Linear(d_model, ssm_in_dim, bias=False)   # Linear Proj (SSM branch)
+        self.in_mimo = MIMO(ssm_in_dim)                              # MIMO after first Linear Proj
+        self.ssm_norm = RMSNorm(ssm_in_dim, eps=eps)                 # Second RMS-Norm before RoPE
+        self.rope = RoPE(ssm_in_dim)                                 # RoPE
 
         # SSM parameters: A (log), dt, dt_bias
         self.A_log = nn.Parameter(
@@ -105,20 +117,19 @@ class UniMamba(nn.Module):
 
         # Post-SSM MIMO and output projection
         self.out_mimo = MIMO(self.nheads * self.headdim)
-        self.out_proj = nn.Linear(self.nheads * self.headdim, dim, bias=False)
+        self.out_proj = nn.Linear(self.nheads * self.headdim, d_model, bias=False)
 
         # --- Gate branch (bottom path in diagram) ---
         # Linear Proj → MIMO → SILU
-        self.gate_proj = nn.Linear(dim, self.nheads * self.headdim, bias=False)
+        self.gate_proj = nn.Linear(d_model, self.nheads * self.headdim, bias=False)
         self.gate_mimo = MIMO(self.nheads * self.headdim)
 
     def forward(self, u: torch.Tensor) -> torch.Tensor:
         """
-        u: (batch, seqlen, dim)
-        returns: (batch, seqlen, dim)
+        u: (batch, seqlen, d_model)
+        returns: (batch, seqlen, d_model)
         """
         B_sz, T, D = u.shape
-        residual = u  # for outer skip if needed
 
         # 1. Pre-norm
         u_norm = self.norm(u)  # (B, T, D)
@@ -170,6 +181,6 @@ class UniMamba(nn.Module):
 
         # 4. Post-SSM: MIMO → Linear Proj
         out = self.out_mimo(out)                         # (B, T, H*P)
-        out = self.out_proj(out)                         # (B, T, dim)
+        out = self.out_proj(out)                         # (B, T, d_model)
 
-        return out
+        return out + u                                   # residual add

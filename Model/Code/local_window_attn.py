@@ -20,24 +20,36 @@ class LocalWindowAttention(nn.Module):
       - causal=True  (for decoder use):     left-only window, [t-w, t]
 
     Args:
-        d_model:     model hidden dimension
-        nheads:      number of attention heads
-        window:      one-sided window size — token t sees [t-window, t+window]
-        dropout:     attention dropout probability
-        causal:      if True, only attend to past positions (left window only)
-        eps:         RMSNorm epsilon
+        d_model:      model hidden dimension
+        nheads:       number of attention heads  (also accepted as `num_heads`)
+        window:       one-sided window size       (also accepted as `window_size`)
+        dropout:      attention dropout probability
+        causal:       if True, only attend to past positions (left window only)
+        eps:          RMSNorm epsilon
     """
 
     def __init__(
         self,
         d_model: int,
-        nheads: int,
-        window: int = 32,
+        nheads: int = None,
+        window: int = None,
         dropout: float = 0.0,
         causal: bool = False,
         eps: float = 1e-6,
+        # aliases used by AudioEncoder
+        num_heads: int = None,
+        window_size: int = None,
     ):
         super().__init__()
+
+        # Resolve aliases
+        if nheads is None and num_heads is not None:
+            nheads = num_heads
+        if window is None and window_size is not None:
+            window = window_size
+
+        assert nheads is not None, "nheads (or num_heads) must be provided"
+        assert window is not None, "window (or window_size) must be provided"
         assert d_model % nheads == 0, "d_model must be divisible by nheads"
 
         self.d_model  = d_model
@@ -49,9 +61,9 @@ class LocalWindowAttention(nn.Module):
 
         self.norm = RMSNorm(d_model, eps=eps)
 
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_proj   = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj   = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj   = nn.Linear(d_model, d_model, bias=False)
         self.out_proj = nn.Linear(d_model, d_model, bias=False)
 
         self.attn_drop = nn.Dropout(dropout)
@@ -66,33 +78,30 @@ class LocalWindowAttention(nn.Module):
 
         If causal=True, additionally block j > i (future positions).
         """
-        # positions i (rows) and j (cols)
         i = torch.arange(L, device=device).unsqueeze(1)  # (L, 1)
         j = torch.arange(L, device=device).unsqueeze(0)  # (1, L)
 
-        # distance mask: block anything outside the window
         dist_mask = (i - j).abs() > self.window          # (L, L)  True = blocked
 
         if self.causal:
-            # additionally block future positions
             causal_mask = j > i                           # (L, L)  True = blocked
             return dist_mask | causal_mask
 
-        return dist_mask                                  # (L, L)
+        return dist_mask
 
     # ------------------------------------------------------------------
     def forward(
         self,
-        x: torch.Tensor,                              # (B, L, d_model)
+        x: torch.Tensor,                               # (B, L, d_model)
         key_padding_mask: Optional[torch.Tensor] = None,  # (B, L) True = padded
-    ) -> torch.Tensor:                                # (B, L, d_model)
+    ) -> torch.Tensor:                                 # (B, L, d_model)
         B, L, D = x.shape
         residual = x
 
         xn = self.norm(x)
 
         # Project to Q, K, V
-        Q = self.q_proj(xn)   # (B, L, d_model)
+        Q = self.q_proj(xn)
         K = self.k_proj(xn)
         V = self.v_proj(xn)
 
@@ -106,19 +115,16 @@ class LocalWindowAttention(nn.Module):
         scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
 
         # Apply local window mask
-        window_mask = self._build_window_mask(L, x.device)  # (L, L)  True=blocked
+        window_mask = self._build_window_mask(L, x.device)  # (L, L) True=blocked
         scores = scores.masked_fill(window_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
 
         # Apply padding mask if provided
         if key_padding_mask is not None:
-            # key_padding_mask: (B, L)  True = padded position
-            # Expand to (B, 1, 1, L) so it broadcasts over heads and query positions
             scores = scores.masked_fill(
                 key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf")
             )
 
-        # Softmax — positions where ALL keys are masked will produce NaN
-        # (can happen at boundaries if window > L). Clamp to 0 via nan_to_num.
+        # Softmax — clamp NaN from fully-masked rows to 0
         attn = torch.softmax(scores, dim=-1)
         attn = torch.nan_to_num(attn, nan=0.0)
         attn = self.attn_drop(attn)
