@@ -27,7 +27,7 @@ def train():
 
     # 1. Data — point these at your LibriSpeech root and MFA output root
     train_set = LibriSpeechMFADataset(
-        librispeech_root="/mnt/c/Users/ammar/programs/python/SpeechThrapyDemo/Model/Data/PhonemeDatasets/LibriSpeech/LibriSpeech/train-clean-100",
+        librispeech_root="../Data/PhonemeDatasets/LibriSpeech/LibriSpeech/train-clean-100",
         mfa_output_root="/home/ableflyer/librispeech_aligned",   # wherever mfa align wrote TextGrids
         max_frames=1024,
     )

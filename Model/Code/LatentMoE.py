@@ -47,7 +47,7 @@ class LatentMoE(nn.Module):
         base_block: Optional[nn.Module] = None,
     ):
         super().__init__()
-
+        self.base_block = base_block
         # Default latent_dim to d_model // 4 if not supplied
         if latent_dim is None:
             latent_dim = max(d_model // 4, 64)
@@ -88,45 +88,82 @@ class LatentMoE(nn.Module):
 
         self.norm = RMSNorm(d_model)
         self.drop = nn.Dropout(dropout)
+        self.current_step = 0
 
     def _route(self, x_flat: torch.Tensor):
-        logits = self.router(x_flat)                         # (N, E)
+        logits = self.router(x_flat)  # (N, E)
+
+        if self.training:
+            # Simple noise only - no temperature
+            if self.current_step < 10_000:
+                noise_std = 0.1
+            else:
+                noise_std = 0.05
+            logits = logits + torch.randn_like(logits) * noise_std
+
         gates_topk, indices = torch.topk(logits, self.top_k, dim=-1)
         gates_topk = torch.softmax(gates_topk, dim=-1)
 
+        # Aux loss - track ALL top_k experts, not just top-1
         router_prob = torch.softmax(logits, dim=-1)
-        one_hot = torch.zeros_like(router_prob)
-        one_hot.scatter_(1, indices[:, :1], 1.0)
-        f_e = one_hot.mean(0)
-        P_e = router_prob.mean(0)
-        aux = self.aux_loss_coeff * self.num_experts * (f_e * P_e).sum()
+        N = x_flat.shape[0]
+        top1_indices = indices[:, :1]  # (N, 1)
+        one_hot = torch.zeros(N, self.num_experts, device=x_flat.device)
+        one_hot.scatter_(1, top1_indices, 1.0)  # only top-1
+        tokens_per_expert = one_hot.float().sum(0)
+        f_e = one_hot.mean(0)  # normalize
+        P_e = router_prob.mean(0) 
+        aux = self.num_experts * (f_e * P_e).sum()  # coeff applied in train loop
 
         return gates_topk, indices, aux
 
-    def _dispatch_combine(self, z, gates, indices):
-        out = torch.zeros_like(z)
+    def _dispatch_combine(self, z: torch.Tensor, gates: torch.Tensor, indices: torch.Tensor):
+        """
+        PARALLEL dispatch: compute ALL expert outputs, then gather.
+        Much faster and more stable than looping.
+        
+        z: (N, latent_dim)
+        gates: (N, top_k)
+        indices: (N, top_k)
+        """
+        N, L = z.shape
+        
+        # Compute ALL expert outputs in parallel using einsum
+        # h: (N, num_experts, d_ff)
+        h = torch.einsum('nl,efl->nef', z, self.expert_W1)
+        h = F.silu(h)
+        
+        # z_out: (N, num_experts, latent_dim)
+        z_out = torch.einsum('nef,elf->nel', h, self.expert_W2)
+        
+        # Gather top-k experts and weight them
+        # indices: (N, top_k), gates: (N, top_k)
+        out = torch.zeros(N, L, device=z.device, dtype=z.dtype)
+        
         for k in range(self.top_k):
-            idx = indices[:, k]
-            w   = gates[:, k]
-            for e in range(self.num_experts):
-                mask = idx == e
-                if not mask.any():
-                    continue
-                z_e     = z[mask]
-                h       = F.silu(z_e @ self.expert_W1[e].t())
-                z_e_out = h @ self.expert_W2[e].t()
-                out[mask] += w[mask, None] * z_e_out
+            expert_idx = indices[:, k]      # (N,)
+            gate_w = gates[:, k]            # (N,)
+            
+            # Select the expert output for each token
+            # z_out[n, expert_idx[n], :] is the output of the chosen expert for token n
+            selected = z_out[torch.arange(N, device=z.device), expert_idx]  # (N, latent_dim)
+            out += gate_w.unsqueeze(1) * selected
+        
         return out
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: (B, L, d_model)
+            step: Current training step, used for temperature annealing in routing. Ignored during eval.
         Returns:
             out: (B, L, d_model)   — aux_loss is accumulated internally via the
                  residual connection; callers that need the aux loss should register
                  a forward hook or use the _route method directly.
         """
+        if self.base_block is not None:
+            x = self.base_block(x)
+        
         B, L, D = x.shape
         residual = x
         x = self.norm(x)

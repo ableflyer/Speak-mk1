@@ -16,7 +16,7 @@ class RMSNorm(nn.Module):
         orig_dtype = x.dtype
         x_fp32 = x.float()  # upcast to fp32 for numerical stability
         norm = x_fp32.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        return (x_fp32 * norm).to(orig_dtype) * self.weight
+        return ((x_fp32 * norm).to(orig_dtype) * self.weight).clone()
 
 
 class RoPE(nn.Module):
