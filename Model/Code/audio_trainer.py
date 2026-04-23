@@ -2,7 +2,7 @@ import torch
 import torchaudio
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from audio_encoder import AudioEncoder, AudioEncoderConfig, aggregate_losses
 from librispeechMFADataset import LibriSpeechMFADataset, collate_fn
 from dataclasses import dataclass
@@ -28,7 +28,7 @@ def train():
     # 1. Data — point these at your LibriSpeech root and MFA output root
     train_set = LibriSpeechMFADataset(
         librispeech_root="../Data/PhonemeDatasets/LibriSpeech/LibriSpeech/train-clean-100",
-        mfa_output_root="/home/ableflyer/librispeech_aligned",   # wherever mfa align wrote TextGrids
+        mfa_output_root="../Data/PhonemeDatasets/LibriSpeech/LibriSpeech/train-clean-100-mfa",   # wherever mfa align wrote TextGrids
         max_frames=1024,
     )
     train_loader = DataLoader(
@@ -65,7 +65,7 @@ def train():
             mel    = mel.to(device)
             labels = {k: v.to(device) for k, v in labels.items()}
 
-            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            with autocast('cuda', dtype=torch.bfloat16):
                 _, losses = model(mel, labels=labels, use_extractor=False)
 
                 loss = aggregate_losses(losses, weights={
