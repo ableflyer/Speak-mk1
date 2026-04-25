@@ -1,0 +1,12 @@
+{
+  "name": "speechquest-backend",
+  "version": "1.0.0",
+  "module": "server.js",
+  "scripts": {
+    "start": "bun run server.js",
+    "dev": "bun --watch server.js"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
