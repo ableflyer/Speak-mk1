@@ -43,8 +43,26 @@ import LatentMoE
 # ════════════════════════════════════════════════════════════════════════════
 
 DATA_DIR  = Path("./../Data/LLM_Data_updated")
-CKPT_DIR  = Path("./../Model_files/checkpoints_v2")
-LOG_DIR   = Path("./../Data/logs_v2")
+CKPT_DIR  = Path("./../Model_files/checkpoints_v2.2")
+LOG_DIR   = Path("./../Data/logs_v2.2")
+
+# add near top with other constants
+SPECIAL_TOKENS = {
+    "system_start":  "<|system|>",
+    "child_start":   "<|child|>",
+    "think_start":   "<|think|>",
+    "slp_start":     "<|slp|>",
+    "turn_end":      "<|endturn|>",
+    "seq_end":       "<|endseq|>",
+}
+
+SYSTEM_PROMPT_TEMPLATE = (
+    "You are SpeakMK1, a warm and clinically expert AI speech-language pathologist for children. "
+    "The child is {age} years old and presents with {disorder} ({specific_error}). "
+    "Clinical goal: {clinical_goal}. "
+    "Primary strategy: {strategy}. "
+    "Always analyze errors clinically before responding. Be encouraging, patient, and use scaffolding."
+)
 
 STAGE_CONFIG = {
     1: {
@@ -60,9 +78,9 @@ STAGE_CONFIG = {
                 "streaming": False,
             }
         ],
-        "train_steps":  50_000,
-        "lr":           6e-4,
-        "warmup_steps": 2_000,
+        "train_steps":  30_000,
+        "lr":           3e-4,
+        "warmup_steps": 3_000,
         "seq_len":      512,
         "batch_size":   4,
         "grad_accum":   8,
@@ -70,29 +88,49 @@ STAGE_CONFIG = {
     2: {
         "name": "child_directed_adapt",
         "datasets": [
-            # {
-            #     "id":      "tinystories",
-            #     "hf_path": "roneneldan/TinyStories",
-            #     "hf_name": None,
-            #     "split":   "train",
-            #     "text_key": "text",
-            #     "max_docs": 500_000,
-            #     "streaming": False,
-            #     "weight":  0.8,
-            # },
+            {
+                "id":      "tinystories",
+                "hf_path": "roneneldan/TinyStories",
+                "hf_name": None,
+                "split":   "train",
+                "text_key": "text",
+                "max_docs": 500_000,
+                "streaming": False,
+                "weight":  1.0,
+                "repeat":  1,
+            },
             {
                 "id":      "childes",
                 "local":   True,
+                "weight": 4.0,
+                "repeat": 8,  # repeat childes 8x to give it more weight during training
             }
         ],
-        "train_steps":  30_000,
+        "train_steps":  5_000,
         "lr":           1e-4,
-        "warmup_steps": 500,
+        "warmup_steps": 250,
         "seq_len":      512,
         "batch_size":   4,
         "grad_accum":   8,
     },
     3: {
+        "name": "clinical_knowledge",
+        "datasets": [
+            {
+                "id":      "pubmed",
+                "local":   True,
+                "weight":  1.0,
+                "repeat":  1,
+            }
+        ],
+        "train_steps":  3_000,   # pubmed is background, don't overfit
+        "lr":           5e-5,    # low — you're fine-tuning, not pretraining
+        "warmup_steps": 150,
+        "seq_len":      512,
+        "batch_size":   4,
+        "grad_accum":   4,
+    },
+    4: {
         "name": "clinical_injection",
         "datasets": [],
         "train_steps":  5_000,
@@ -102,7 +140,7 @@ STAGE_CONFIG = {
         "batch_size":   4,
         "grad_accum":   4,
     },
-    4: {
+    5: {
         "name": "instruction_tuning",
         "datasets": [
             {
@@ -124,6 +162,36 @@ STAGE_CONFIG = {
     },
 }
 
+# ════════════════════════════════════════════════════════════════════════════
+# Slp dataset
+# ════════════════════════════════════════════════════════════════════════════
+
+class SLPDataset(Dataset):
+    def __init__(self, stage: int = 3, seq_len: int = 512, repeat: int = 1):
+        ids_path    = DATA_DIR / f"stage{stage}_slp_ids.bin"
+        labels_path = DATA_DIR / f"stage{stage}_slp_labels.bin"
+        
+        self.ids    = np.memmap(str(ids_path),    dtype=np.uint16, mode="r")
+        self.labels = np.memmap(str(labels_path), dtype=np.int32,  mode="r")
+        self.seq_len = seq_len
+        self.n_seqs  = (len(self.ids) - 1) // seq_len
+        self.repeat  = repeat
+        
+        print(f"  [SLPDataset] {len(self.ids):,} tokens | {self.n_seqs:,} seqs")
+
+    def __len__(self):
+        return self.n_seqs * self.repeat
+
+    def __getitem__(self, idx):
+        idx = idx % self.n_seqs
+        start = idx * self.seq_len
+        x = torch.from_numpy(
+            self.ids[start : start + self.seq_len].astype(np.int64)
+        )
+        y = torch.from_numpy(
+            self.labels[start + 1 : start + self.seq_len + 1].astype(np.int64)
+        )
+        return x, y
 
 # ════════════════════════════════════════════════════════════════════════════
 # 2.  TOKENIZER
@@ -176,11 +244,17 @@ def tokenize_childes(childes_root: str, stage: int = 2):
             utterances = []
             for line in lines:
                 if line.startswith("*"):
-                    text = re.sub(r"^\*[A-Z]+:\t", "", line)
-                    text = re.sub(r"\[.*?\]", "", text)
-                    text = re.sub(r"<.*?>", "", text)
-                    text = re.sub(r"[+/\\]", "", text)
-                    text = re.sub(r"[&@]\w+", "", text)
+                    text = re.sub(r"^\*[A-Z]+:\t", "", line)  # speaker ID
+                    text = re.sub(r"\[.*?\]", "", text)        # [brackets]
+                    text = re.sub(r"<.*?>", "", text)          # <tags>
+                    text = re.sub(r"\(+\.*\)+", "", text)      # () (..) (...)
+                    text = re.sub(r"\.[A-Za-z]+", "", text)    # .PAR .ee .es etc
+                    text = re.sub(r"[+/\\]", "", text)         # operators
+                    text = re.sub(r"[&@]\w+", "", text)        # &word @word
+                    text = re.sub(r"\*\d+", "", text)          # *4 *2 etc
+                    text = re.sub(r"\d+", "", text)            # stray numbers
+                    text = re.sub(r"_", " ", text)             # underscores
+                    text = re.sub(r"\s+", " ", text)           # collapse spaces
                     text = text.strip()
                     if text and len(text) > 3:
                         utterances.append(text)
@@ -284,52 +358,152 @@ def tokenize_stage(stage: int):
                         f"{size_gb:.2f} GB | "
                         f"{elapsed:.0f}s elapsed")
 
+def _format_slp_dialogue(entry: dict, tokenizer) -> tuple:
+    meta = entry["metadata"]
+    system_text = (
+        SPECIAL_TOKENS["system_start"] + " " +
+        SYSTEM_PROMPT_TEMPLATE.format(
+            age=meta["age"],
+            disorder=meta["disorder"],
+            specific_error=meta.get("specific_error", ""),
+            clinical_goal=meta.get("clinical_goal", ""),
+            strategy=meta.get("primary_strategy", ""),
+        ) + " " + SPECIAL_TOKENS["turn_end"]
+    )
 
-def tokenize_local_jsonl(jsonl_path: str, stage: int, dataset_id: str):
+    all_ids    = []
+    all_labels = []
+
+    sys_ids = tokenizer.encode(system_text, add_special_tokens=False)
+    all_ids    += sys_ids
+    all_labels += [-100] * len(sys_ids)
+
+    for turn in entry["dialogue"]:
+        child_ids = tokenizer.encode(
+            SPECIAL_TOKENS["child_start"] + " " + turn["child_input"] + " " + SPECIAL_TOKENS["turn_end"],
+            add_special_tokens=False
+        )
+        think_ids = tokenizer.encode(
+            SPECIAL_TOKENS["think_start"] + " " + turn["model_thought"] + " " + SPECIAL_TOKENS["turn_end"],
+            add_special_tokens=False
+        )
+        slp_ids = tokenizer.encode(
+            SPECIAL_TOKENS["slp_start"] + " " + turn["slp_response"] + " " + SPECIAL_TOKENS["turn_end"],
+            add_special_tokens=False
+        )
+
+        all_ids    += child_ids + think_ids
+        all_labels += [-100] * (len(child_ids) + len(think_ids))
+
+        all_ids    += slp_ids
+        all_labels += slp_ids   # train on SLP output only
+
+    eos_ids = tokenizer.encode(SPECIAL_TOKENS["seq_end"], add_special_tokens=False)
+    all_ids    += eos_ids
+    all_labels += eos_ids
+
+    return all_ids, all_labels
+
+def tokenize_slp_jsonl(jsonl_path: str, stage: int = 3):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tok      = get_tokenizer()
-    eos      = tok.eos_token_id
-    bin_path = DATA_DIR / f"stage{stage}_{dataset_id}.bin"
-
-    if bin_path.exists():
-        print(f"  [{dataset_id}] already exists — skipping.")
+    
+    ids_path    = DATA_DIR / f"stage{stage}_slp_ids.bin"
+    labels_path = DATA_DIR / f"stage{stage}_slp_labels.bin"
+    
+    if ids_path.exists() and labels_path.exists():
+        print(f"  [slp] already exists — skipping.")
         return
 
-    print(f"  Tokenizing {jsonl_path} → {bin_path} …")
+    # load tokenizer with special tokens
+    tok = get_tokenizer()
+    tok.add_special_tokens({
+        "additional_special_tokens": list(SPECIAL_TOKENS.values())
+    })
+
+    all_ids    = []
+    all_labels = []
+    n_seqs = 0
+
+    print(f"  [slp] Tokenizing {jsonl_path} ...")
+
+    with open(jsonl_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ids, labels = _format_slp_dialogue(entry, tok)
+
+            # truncate to 2048
+            if len(ids) > 2048:
+                ids    = ids[:2048]
+                labels = labels[:2048]
+
+            all_ids    += ids
+            all_labels += labels
+            n_seqs += 1
+
+    ids_arr    = np.array(all_ids,    dtype=np.uint16)
+    labels_arr = np.array(all_labels, dtype=np.int32)
+
+    ids_arr.tofile(str(ids_path))
+    labels_arr.tofile(str(labels_path))
+
+    n_slp = sum(1 for l in all_labels if l != -100)
+    print(f"  [slp] Done. {n_seqs} dialogues | "
+          f"{len(all_ids):,} tokens | "
+          f"{n_slp:,} trainable tokens ({100*n_slp/len(all_ids):.1f}%)")
+    
+def tokenize_pubmed_jsonl(jsonl_path: str, stage: int = 2):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    bin_path = DATA_DIR / f"stage{stage}_pubmed.bin"
+    
+    if bin_path.exists():
+        print(f"  [pubmed] exists — skipping.")
+        return
+
+    tok = get_tokenizer()
+    eos = tok.eos_token_id
     tokens_done = 0
 
-    with open(jsonl_path, "r") as fin, open(bin_path, "wb") as fout:
+    with open(bin_path, "wb") as fout, open(jsonl_path) as fin:
         for line in fin:
-            obj  = json.loads(line)
-            text = obj.get("text", "")
-            if not text.strip():
+            obj = json.loads(line.strip())
+            # Use title + abstract + body (skip full_text, it's redundant)
+            text = f"{obj.get('title','')} {obj.get('abstract','')} {obj.get('body','')}".strip()
+            if len(text) < 300:
                 continue
+            text = text[:20_000]  # cap long review papers
             ids = tok.encode(text, add_special_tokens=False)
             ids.append(eos)
             fout.write(np.array(ids, dtype=np.uint16).tobytes())
             tokens_done += len(ids)
 
-    print(f"  Done. {tokens_done/1e6:.2f}M tokens | "
-          f"{bin_path.stat().st_size/1e6:.1f} MB")
-
+    print(f"  [pubmed] {tokens_done/1e6:.2f}M tokens → {bin_path}")
 
 # ════════════════════════════════════════════════════════════════════════════
 # 4.  DATASET
 # ════════════════════════════════════════════════════════════════════════════
 
 class PackedTokenDataset(Dataset):
-    def __init__(self, bin_path: str, seq_len: int):
+    def __init__(self, bin_path: str, seq_len: int, repeat: int = 1):
         self.seq_len = seq_len
         self.data    = np.memmap(bin_path, dtype=np.uint16, mode="r")
         self.n_seqs  = (len(self.data) - 1) // seq_len
         print(f"  Loaded {bin_path}")
         print(f"    Tokens : {len(self.data):,}")
         print(f"    Seqs   : {self.n_seqs:,}  (seq_len={seq_len})")
+        self.repeat  = repeat
 
     def __len__(self):
-        return self.n_seqs
+        return self.n_seqs * self.repeat
 
     def __getitem__(self, idx: int):
+        idx = idx % self.n_seqs
         start = idx * self.seq_len
         chunk = self.data[start : start + self.seq_len + 1].astype(np.int64)
         x = torch.from_numpy(chunk[:-1])
@@ -356,6 +530,18 @@ class ConcatDataset(Dataset):
 def build_dataloader(stage: int, seq_len: int, batch_size: int) -> DataLoader:
     stage_datasets = []
     weights = []
+    
+    if stage == 4:  # For stage 4, use the SLP dataset only
+        slp_ds = SLPDataset(stage=stage, seq_len=seq_len, repeat=20)
+        print(f"  [slp] {len(slp_ds):,} sequences (repeat=20)")
+        return DataLoader(
+            slp_ds,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
+            drop_last=True,
+        )
 
     for ds_cfg in STAGE_CONFIG[stage]["datasets"]:
         ds_id = ds_cfg["id"]
@@ -368,8 +554,8 @@ def build_dataloader(stage: int, seq_len: int, batch_size: int) -> DataLoader:
             print(f"  WARNING: {bin_path} not found — skipping."
                   f" Run: python train_speakmk1_llm.py tokenize --stage {stage}")
             continue
-        
-        ds = PackedTokenDataset(str(bin_path), seq_len)
+        repeat = ds_cfg.get("repeat", 1)
+        ds = PackedTokenDataset(str(bin_path), seq_len, repeat=repeat)
         stage_datasets.append(ds)
         weights.append(ds_cfg.get("weight", 1.0))
         print(f"  [{ds_id}] {len(ds):,} sequences (weight={weights[-1]})")
@@ -379,7 +565,7 @@ def build_dataloader(stage: int, seq_len: int, batch_size: int) -> DataLoader:
         name = extra.stem.replace(f"stage{stage}_", "")
         if not any(d["id"] == name for d in STAGE_CONFIG[stage]["datasets"]):
             print(f"  Found extra dataset: {extra.name}")
-            ds = PackedTokenDataset(str(extra), seq_len)
+            ds = PackedTokenDataset(str(extra), seq_len, repeat=4)
             stage_datasets.append(ds)
             weights.append(1.0)
 
@@ -477,6 +663,81 @@ def train(stage: int, resume: Optional[str] = None):
     #     model = torch.compile(model, mode="default", fullgraph=False)
     #     torch._dynamo.config.cache_size_limit = 64
     #     torch._dynamo.config.suppress_errors = True
+    
+    start_step = 0
+    best_loss = float("inf")
+    
+    tok = get_tokenizer()
+    
+    if resume:
+        print(f"  Resuming from {resume} …")
+        torch.serialization.add_safe_globals([SpeakMK1LLMConfig])
+        ckpt = torch.load(resume, map_location=device)
+        # first_key = list(ckpt["model"].keys())[0]
+        # print(f"First key: {first_key}")
+        # print(f"Value: mean={ckpt['model'][first_key].mean():.4f}, std={ckpt['model'][first_key].std():.4f}")
+        # # check if weights actually have real values
+        # for name, param in model.named_parameters():
+        #     print(f"{name}: mean={param.data.mean():.4f}, std={param.data.std():.4f}")
+        #     break  # just first layer
+        
+        model.load_state_dict(ckpt["model"])
+        
+        with torch.no_grad():
+            ids = tok.encode("The little dog ran", return_tensors="pt").to(device)
+            model.eval()
+            _, ce, _ = model(ids, labels=ids)
+            model.train()
+            print(f"POST LOAD SANITY: {ce.item():.4f}")
+
+        # print(f"train mode ce: {ce_train.item():.4f}")
+        # print(f"eval mode ce:  {ce_eval.item():.4f}")
+        print(f"Checkpoint stage: {ckpt.get('stage')}")
+        print(f"Checkpoint step: {ckpt.get('step')}")
+        print(f"Checkpoint best_loss: {ckpt.get('best_loss')}")
+
+        # # quick sanity forward
+        # model.eval()
+        # with torch.no_grad():
+        #     x_test = torch.randint(0, 50277, (1, 32), device=device)
+        #     logits, ce, aux = model(x_test, labels=x_test)
+        #     print(f"Sanity ce_loss after load: {ce.item():.4f}")
+        # model.train()
+        
+        saved_stage = ckpt.get("stage")
+        saved_step = ckpt["step"]
+        
+        # if saved_stage is None:
+        #     if saved_step >= cfg["train_steps"]:
+        #         print(f"  Detected checkpoint from previous stage (step {saved_step} > {cfg['train_steps']})")
+        #         start_step = 0
+        #         print(f"  Starting Stage {stage} training from step 0 with transferred weights")
+        #     else:
+        #         start_step = saved_step
+        #         optimizer.load_state_dict(ckpt["optimizer"])
+        #         best_loss = ckpt.get("best_loss", float("inf"))
+                
+        # elif saved_stage != stage:
+        #     print(f"  Transferring from Stage {saved_stage} to Stage {stage}")
+        #     start_step = 0
+        #     print(f"  Fresh optimizer for Stage {stage} (LR={cfg['lr']})")
+            
+        # else:
+        #     start_step = saved_step
+        #     optimizer.load_state_dict(ckpt["optimizer"])
+        #     best_loss = ckpt.get("best_loss", float("inf"))
+        if saved_stage != stage:
+            print(f"  Transferring from Stage {saved_stage} to Stage {stage}")
+            start_step = 0
+            print(f"  Fresh optimizer for Stage {stage}")
+        else:
+            start_step = saved_step
+            optimizer.load_state_dict(ckpt["optimizer"])
+            best_loss = ckpt.get("best_loss", float("inf"))
+        
+        print(f"  Starting at step {start_step}")
+            
+        print(f"  Starting at step {start_step}")
 
     params = count_parameters(model)
     print(f"  Model parameters: {params['total_M']}M total | {params['trainable_M']}M trainable")
@@ -484,17 +745,16 @@ def train(stage: int, resume: Optional[str] = None):
     # ── Optimizer ─────────────────────────────────────────────────────────
     # FIXED: Router LR multiplier reduced from 10x to 1.5x for stability
     # MoE routers are sensitive to aggressive LR scaling [^2^]
-    ROUTER_LR_MULT = 5.0
     
     if HAS_BNB:
         print(f"  Optimizer: AdamW8bit (bitsandbytes) — saves ~2 GB VRAM")
-        print(f"  Router LR multiplier: {ROUTER_LR_MULT}x")
-        optimizer = AdamW8bit([
-            {"params": [p for n, p in model.named_parameters() 
-                        if "router" not in n], "lr": cfg["lr"]},
-            {"params": [p for n, p in model.named_parameters() 
-                        if "router" in n], "lr": cfg["lr"] * ROUTER_LR_MULT},
-        ], betas=(0.9, 0.95), weight_decay=0.1)
+        optimizer = AdamW8bit(
+            model.parameters(),
+            lr=cfg["lr"],
+            betas=(0.9, 0.95),
+            weight_decay=0.1,
+            eps=1e-8
+        )
     else:
         print("  Optimizer: AdamW (install bitsandbytes for 8-bit Adam)")
         optimizer = torch.optim.AdamW(
@@ -505,74 +765,41 @@ def train(stage: int, resume: Optional[str] = None):
             eps=1e-8,
             fused=True,
         )
+    # ── resume ───────────────────────────────────────────────────────
+    
 
     # ── Timing test ───────────────────────────────────────────────────────
-    if device.type == "cuda":
-        print("\n  Running timing test …")
-        model.train()
-        x_test = torch.randint(0, 50277, (4, 512), device=device)
-        y_test = torch.randint(0, 50277, (4, 512), device=device)
+    # if device.type == "cuda":
+    #     print("\n  Running timing test …")
+    #     model.train()
+    #     x_test = torch.randint(0, 50277, (4, 512), device=device)
+    #     y_test = torch.randint(0, 50277, (4, 512), device=device)
 
-        # Warmup
-        with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            logits, ce_loss, aux_loss = model(x_test, labels=y_test)
-            total = (ce_loss + model_cfg.aux_loss_weight * aux_loss) / cfg["grad_accum"]
-        total.backward()
-        optimizer.zero_grad()
-        torch.cuda.synchronize()
+    #     # Warmup
+    #     with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+    #         logits, ce_loss, aux_loss = model(x_test, labels=y_test)
+    #         total = (ce_loss + model_cfg.aux_loss_weight * aux_loss) / cfg["grad_accum"]
+    #     total.backward()
+    #     optimizer.zero_grad()
+    #     torch.cuda.synchronize()
 
-        # Time 5 passes
-        t0 = time.time()
-        for _ in range(5):
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                logits, ce_loss, aux_loss = model(x_test, labels=y_test)
-                total = (ce_loss + model_cfg.aux_loss_weight * aux_loss) / cfg["grad_accum"]
-            total.backward()
-            optimizer.zero_grad()
-        torch.cuda.synchronize()
-        t1 = time.time()
+    #     # Time 5 passes
+    #     t0 = time.time()
+    #     for _ in range(5):
+    #         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+    #             logits, ce_loss, aux_loss = model(x_test, labels=y_test)
+    #             total = (ce_loss + model_cfg.aux_loss_weight * aux_loss) / cfg["grad_accum"]
+    #         total.backward()
+    #         optimizer.zero_grad()
+    #     torch.cuda.synchronize()
+    #     t1 = time.time()
 
-        ms = (t1 - t0) / 5 * 1000
-        print(f"  Forward+backward : {ms:.0f}ms per micro-step")
-        print(f"  Per full step    : {ms * cfg['grad_accum'] / 1000:.1f}s")
-        print(f"  Projected speed  : {86400 / (ms * cfg['grad_accum'] / 1000):.0f} steps/day")
-
-    # ── Resume from checkpoint ─────────────────────────────────────────────
-    start_step   = 0
-    best_loss    = float("inf")
-
-    if resume:
-        print(f"  Resuming from {resume} …")
-        torch.serialization.add_safe_globals([SpeakMK1LLMConfig])
-        ckpt = torch.load(resume, map_location=device)
-        
-        model.load_state_dict(ckpt["model"])
-        
-        saved_stage = ckpt.get("stage", None)
-        saved_step = ckpt["step"]
-        
-        if saved_stage is None:
-            if saved_step >= cfg["train_steps"]:
-                print(f"  Detected checkpoint from previous stage (step {saved_step} > {cfg['train_steps']})")
-                print(f"  Starting Stage {stage} training from step 0 with transferred weights")
-                start_step = 0
-            else:
-                start_step = saved_step
-                optimizer.load_state_dict(ckpt["optimizer"])
-                best_loss = ckpt.get("best_loss", float("inf"))
-                
-        elif saved_stage != stage:
-            print(f"  Transferring from Stage {saved_stage} to Stage {stage}")
-            start_step = 0
-            print(f"  Fresh optimizer for Stage {stage} (LR={cfg['lr']})")
-            
-        else:
-            start_step = saved_step
-            optimizer.load_state_dict(ckpt["optimizer"])
-            best_loss = ckpt.get("best_loss", float("inf"))
-            
-        print(f"  Starting at step {start_step}")
-
+    #     ms = (t1 - t0) / 5 * 1000
+    #     print(f"  Forward+backward : {ms:.0f}ms per micro-step")
+    #     print(f"  Per full step    : {ms * cfg['grad_accum'] / 1000:.1f}s")
+    #     print(f"  Projected speed  : {86400 / (ms * cfg['grad_accum'] / 1000):.0f} steps/day")
+    
+    # model.load_state_dict(ckpt["model"], strict=False)
     # ── Dataloader ─────────────────────────────────────────────────────────
     loader = build_dataloader(stage, cfg["seq_len"], cfg["batch_size"])
     loader_iter = iter(loader)
@@ -647,8 +874,8 @@ def train(stage: int, resume: Optional[str] = None):
         if step % 100 == 0:
             # FIXED: Divide by grad_accum here for averaging, not during accumulation
             steps_since_log = 100 if step > 0 else 1
-            avg_loss = loss_acc / steps_since_log
-            avg_aux  = aux_acc  / steps_since_log
+            avg_loss = loss_acc / (steps_since_log * grad_accum)
+            avg_aux  = aux_acc  / (steps_since_log * grad_accum)
             
             elapsed  = time.time() - t_start
             tokens_seen = step * cfg["batch_size"] * grad_accum * cfg["seq_len"]
@@ -948,6 +1175,14 @@ Examples:
     p_childes = subparsers.add_parser("tokenize_childes", help="Tokenize local CHILDES .cha files")
     p_childes.add_argument("--path", type=str, required=True, help="Root directory of CHILDES .cha files")
     p_childes.add_argument("--stage", type=int, default=2)
+    
+    p_slp = subparsers.add_parser("tokenize_slp", help="Tokenize SLP JSONL for stage 3")
+    p_slp.add_argument("--path",  required=True, help="Path to SLP JSONL file")
+    p_slp.add_argument("--stage", type=int, default=3)
+    
+    p_pubmed = subparsers.add_parser("tokenize_pubmed", help="Tokenize PubMed JSONL for stage 2")
+    p_pubmed.add_argument("--path",  required=True, help="Path to PubMed JSONL file")
+    p_pubmed.add_argument("--stage", type=int, default=3)
 
     p_train = subparsers.add_parser("train", help="Train the model")
     p_train.add_argument("--stage",  type=int, required=True, choices=[1, 2, 3, 4])
@@ -962,14 +1197,16 @@ Examples:
 
     if args.command == "tokenize":
         tokenize_stage(args.stage)
-
     elif args.command == "train":
         train(args.stage, resume=args.resume)
-
     elif args.command == "chat":
         chat(args.checkpoint)
     elif args.command == "tokenize_childes":
         tokenize_childes(args.path, stage=args.stage)
+    elif args.command == "tokenize_slp":
+        tokenize_slp_jsonl(args.path, stage=args.stage)
+    elif args.command == "tokenize_pubmed":
+        tokenize_pubmed_jsonl(args.path, stage=args.stage)
     else:
         parser.print_help()
 

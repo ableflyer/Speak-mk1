@@ -94,93 +94,66 @@ class LatentMoE(nn.Module):
         logits = self.router(x_flat)  # (N, E)
 
         if self.training:
-            # Simple noise only - no temperature
-            if self.current_step < 10_000:
-                noise_std = 0.1
-            else:
-                noise_std = 0.05
+            # FIXED: much smaller noise, only early training
+            noise_std = max(0.01, 0.1 * (1.0 - self.current_step / 5000))
             logits = logits + torch.randn_like(logits) * noise_std
 
         gates_topk, indices = torch.topk(logits, self.top_k, dim=-1)
         gates_topk = torch.softmax(gates_topk, dim=-1)
 
-        # Aux loss - track ALL top_k experts, not just top-1
+        # FIXED: track ALL top_k not just top-1
         router_prob = torch.softmax(logits, dim=-1)
         N = x_flat.shape[0]
-        top1_indices = indices[:, :1]  # (N, 1)
         one_hot = torch.zeros(N, self.num_experts, device=x_flat.device)
-        one_hot.scatter_(1, top1_indices, 1.0)  # only top-1
-        tokens_per_expert = one_hot.float().sum(0)
-        f_e = one_hot.mean(0)  # normalize
-        P_e = router_prob.mean(0) 
-        aux = self.num_experts * (f_e * P_e).sum()  # coeff applied in train loop
+        one_hot.scatter_(1, indices, 1.0)  # all top_k experts
+        f_e = one_hot.float().mean(0) / self.top_k
+        P_e = router_prob.mean(0)
+        aux = self.num_experts * (f_e * P_e).sum()
 
         return gates_topk, indices, aux
 
-    def _dispatch_combine(self, z: torch.Tensor, gates: torch.Tensor, indices: torch.Tensor):
-        """
-        PARALLEL dispatch: compute ALL expert outputs, then gather.
-        Much faster and more stable than looping.
-        
-        z: (N, latent_dim)
-        gates: (N, top_k)
-        indices: (N, top_k)
-        """
+    
+    def _dispatch_combine(self, z, gates, indices):
+        # FIXED: sparse dispatch, only compute assigned experts
         N, L = z.shape
-        
-        # Compute ALL expert outputs in parallel using einsum
-        # h: (N, num_experts, d_ff)
-        h = torch.einsum('nl,efl->nef', z, self.expert_W1)
-        h = F.silu(h)
-        
-        # z_out: (N, num_experts, latent_dim)
-        z_out = torch.einsum('nef,elf->nel', h, self.expert_W2)
-        
-        # Gather top-k experts and weight them
-        # indices: (N, top_k), gates: (N, top_k)
         out = torch.zeros(N, L, device=z.device, dtype=z.dtype)
-        
+
         for k in range(self.top_k):
-            expert_idx = indices[:, k]      # (N,)
-            gate_w = gates[:, k]            # (N,)
-            
-            # Select the expert output for each token
-            # z_out[n, expert_idx[n], :] is the output of the chosen expert for token n
-            selected = z_out[torch.arange(N, device=z.device), expert_idx]  # (N, latent_dim)
-            out += gate_w.unsqueeze(1) * selected
-        
+            expert_idx = indices[:, k]   # (N,)
+            gate_w = gates[:, k]         # (N,)
+
+            for e in range(self.num_experts):
+                mask = (expert_idx == e)
+                if not mask.any():
+                    continue
+                z_e = z[mask]                          # (n_e, L)
+                h = F.silu(z_e @ self.expert_W1[e].T) # (n_e, d_ff)
+                z_out_e = h @ self.expert_W2[e].T      # (n_e, L)
+                out[mask] += gate_w[mask].unsqueeze(1) * z_out_e
+
         return out
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: (B, L, d_model)
-            step: Current training step, used for temperature annealing in routing. Ignored during eval.
-        Returns:
-            out: (B, L, d_model)   — aux_loss is accumulated internally via the
-                 residual connection; callers that need the aux loss should register
-                 a forward hook or use the _route method directly.
-        """
         if self.base_block is not None:
             x = self.base_block(x)
-        
+
         B, L, D = x.shape
         residual = x
-        x = self.norm(x)
-        x_flat = x.view(B * L, D)
+        x_normed = self.norm(x)
+        x_flat = x_normed.view(B * L, D)
 
         gates, indices, aux_loss = self._route(x_flat)
 
-        z        = self.W_down(x_flat)
-        z_out    = self._dispatch_combine(z, gates, indices)
+        z = self.W_down(x_flat)
+        z_out = self._dispatch_combine(z, gates, indices)
         y_routed = self.W_up(z_out).view(B, L, D)
 
+        # FIXED: shared expert also uses normed input consistently
         if self.has_shared:
-            out = self.drop(y_routed) + self.shared_expert(x)
+            y_shared = self.shared_expert(x_normed.view(B, L, D))
+            out = self.drop(y_routed) + y_shared
         else:
             out = self.drop(y_routed)
 
-        # Store aux_loss so callers can retrieve it if needed
         self.last_aux_loss = aux_loss
-
         return residual + out

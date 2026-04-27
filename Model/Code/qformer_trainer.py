@@ -167,7 +167,6 @@ def train():
     print("Freezing LLM...")
     for param in llm.parameters():
         param.requires_grad = False
-
     # --- D. Optimizer ---
     # Only pass parameters that require gradients
     trainable_params = (
@@ -210,7 +209,7 @@ def train():
                 # ── ATC loss (contrastive) ──
                 audio_norm = F.normalize(audio_embeds.mean(dim=1), dim=-1)  # (B, d_model)
                 text_norm = F.normalize(text_embeds.mean(dim=1).detach(), dim=-1)  # (B, d_model)
-                sim_a2t = audio_norm @ text_norm.T / 0.07  # (B, B)
+                sim_a2t = audio_norm @ text_norm.T / temperature.clamp(min=0.01)  # (B, B)
                 sim_t2a = sim_a2t.T
                 targets = torch.arange(audio_norm.shape[0], device=device)
                 loss_atc = (
@@ -233,8 +232,12 @@ def train():
                     inputs_embeds=inputs_embeds,
                     labels=labels,
                 )
-
-                loss = loss_atc + 0.5 * loss_lm
+                Q = audio_embeds  # (B, num_queries, d)
+                Q_norm = F.normalize(Q, dim=-1)
+                query_sim = torch.bmm(Q_norm, Q_norm.transpose(1,2))  # (B, Q, Q)
+                eye = torch.eye(query_sim.shape[1], device=device).unsqueeze(0)
+                loss_div = (query_sim * (1 - eye)).pow(2).mean()
+                loss = loss_atc + 0.5 * loss_lm + 0.1 * loss_div
                 total_step_loss = loss / cfg.accumulation_steps
                 # print(f"sim shape: {sim.shape}")
                 # print(f"targets shape: {targets.shape}, max: {targets.max()}, min: {targets.min()}")
@@ -263,7 +266,10 @@ def train():
         print(f"--- Epoch {epoch} Complete | Avg Loss: {avg_loss:.4f} ---")
         
         # Save Checkpoint (Saving only the Q-Former state dict is usually cleaner)
-        torch.save(audio_encoder.state_dict(), f"../Model_files/qformer/qformer_aligned_epoch_{epoch}.pt")
+        torch.save({
+            'encoder': audio_encoder.state_dict(),
+            'projection': audio_projection.state_dict(),
+        }, f"../Model_files/qformer_v2/qformer_aligned_epoch_{epoch}.pt")
 
 if __name__ == "__main__":
     train()
