@@ -94,21 +94,32 @@ class LatentMoE(nn.Module):
         logits = self.router(x_flat)  # (N, E)
 
         if self.training:
-            # FIXED: much smaller noise, only early training
             noise_std = max(0.01, 0.1 * (1.0 - self.current_step / 5000))
             logits = logits + torch.randn_like(logits) * noise_std
 
-        gates_topk, indices = torch.topk(logits, self.top_k, dim=-1)
-        gates_topk = torch.softmax(gates_topk, dim=-1)
+        # Softmax BEFORE topk — this is the critical fix
+        # router_prob is differentiable, gradients flow to router weights
+        router_prob = torch.softmax(logits, dim=-1)  # (N, E)
 
-        # FIXED: track ALL top_k not just top-1
-        router_prob = torch.softmax(logits, dim=-1)
+        # Select top-k from probabilities, not raw logits
+        gates_topk, indices = torch.topk(router_prob, self.top_k, dim=-1)
+
+        # Renormalise so selected gates sum to 1
+        gates_topk = gates_topk / (gates_topk.sum(dim=-1, keepdim=True) + 1e-9)
+
+        # f_e: fraction of tokens routed to each expert (non-differentiable)
+        # Detached intentionally — only P_e carries gradients to router
         N = x_flat.shape[0]
-        one_hot = torch.zeros(N, self.num_experts, device=x_flat.device)
-        one_hot.scatter_(1, indices, 1.0)  # all top_k experts
-        f_e = one_hot.float().mean(0) / self.top_k
-        P_e = router_prob.mean(0)
-        aux = self.num_experts * (f_e * P_e).sum()
+        with torch.no_grad():
+            one_hot = torch.zeros(N, self.num_experts, device=x_flat.device)
+            one_hot.scatter_(1, indices, 1.0)
+            f_e = one_hot.float().mean(0)  # (E,) — no division by top_k
+
+        # P_e: mean router probability per expert (differentiable)
+        P_e = router_prob.mean(0)  # (E,)
+
+        # DeepSeek formulation — uniform router gives 1.0, imbalance pushes above
+        aux = (self.num_experts / self.top_k) * (f_e * P_e).sum()
 
         return gates_topk, indices, aux
 

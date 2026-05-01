@@ -26,6 +26,7 @@ import threading
 import copy
 import torch._dynamo
 from torch.utils.data import ConcatDataset as TorchConcat
+from torch.utils.tensorboard import SummaryWriter
 
 # ── Try to import bitsandbytes for 8-bit Adam ────────────────────────────────
 try:
@@ -43,8 +44,8 @@ import LatentMoE
 # ════════════════════════════════════════════════════════════════════════════
 
 DATA_DIR  = Path("./../Data/LLM_Data_updated")
-CKPT_DIR  = Path("./../Model_files/checkpoints_v2.2")
-LOG_DIR   = Path("./../Data/logs_v2.2")
+CKPT_DIR  = Path("./../Model_files/checkpoints_v2.3.1")
+LOG_DIR   = Path("./../Data/logs_v2.3.1")
 
 # add near top with other constants
 SPECIAL_TOKENS = {
@@ -70,27 +71,28 @@ STAGE_CONFIG = {
         "datasets": [
             {
                 "id":      "tinystories",
-                "hf_path": "roneneldan/TinyStories",
+                "hf_path": "karpathy/tinystories-gpt4-clean",
                 "hf_name": None,
                 "split":   "train",
                 "text_key": "text",
-                "max_docs": 2_000_000,
+                "max_docs": 2_800_000,
                 "streaming": False,
+                "repeat": 3,
             }
         ],
-        "train_steps":  30_000,
+        "train_steps":  75_000,
         "lr":           3e-4,
         "warmup_steps": 3_000,
         "seq_len":      512,
-        "batch_size":   4,
-        "grad_accum":   8,
+        "batch_size":   8,
+        "grad_accum":   4,
     },
     2: {
         "name": "child_directed_adapt",
         "datasets": [
             {
                 "id":      "tinystories",
-                "hf_path": "roneneldan/TinyStories",
+                "hf_path": "karpathy/tinystories-gpt4-clean",
                 "hf_name": None,
                 "split":   "train",
                 "text_key": "text",
@@ -102,16 +104,16 @@ STAGE_CONFIG = {
             {
                 "id":      "childes",
                 "local":   True,
-                "weight": 4.0,
-                "repeat": 8,  # repeat childes 8x to give it more weight during training
+                "weight": 2.0,
+                "repeat": 3,  # repeat childes 3x to give it more weight during training
             }
         ],
         "train_steps":  5_000,
         "lr":           1e-4,
         "warmup_steps": 250,
         "seq_len":      512,
-        "batch_size":   4,
-        "grad_accum":   8,
+        "batch_size":   8,
+        "grad_accum":   4,
     },
     3: {
         "name": "clinical_knowledge",
@@ -127,7 +129,7 @@ STAGE_CONFIG = {
         "lr":           5e-5,    # low — you're fine-tuning, not pretraining
         "warmup_steps": 150,
         "seq_len":      512,
-        "batch_size":   4,
+        "batch_size":   8,
         "grad_accum":   4,
     },
     4: {
@@ -137,7 +139,7 @@ STAGE_CONFIG = {
         "lr":           5e-5,
         "warmup_steps": 200,
         "seq_len":      512,
-        "batch_size":   4,
+        "batch_size":   8,
         "grad_accum":   4,
     },
     5: {
@@ -157,7 +159,7 @@ STAGE_CONFIG = {
         "lr":           2e-5,
         "warmup_steps": 100,
         "seq_len":      512,
-        "batch_size":   4,
+        "batch_size":   8,
         "grad_accum":   4,
     },
 }
@@ -167,7 +169,7 @@ STAGE_CONFIG = {
 # ════════════════════════════════════════════════════════════════════════════
 
 class SLPDataset(Dataset):
-    def __init__(self, stage: int = 3, seq_len: int = 512, repeat: int = 1):
+    def __init__(self, stage: int = 4, seq_len: int = 512, repeat: int = 1):
         ids_path    = DATA_DIR / f"stage{stage}_slp_ids.bin"
         labels_path = DATA_DIR / f"stage{stage}_slp_labels.bin"
         
@@ -202,6 +204,9 @@ def get_tokenizer():
     tok = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    tok.add_special_tokens({
+        "additional_special_tokens": list(SPECIAL_TOKENS.values())
+    })
     return tok
 
 
@@ -244,7 +249,7 @@ def tokenize_childes(childes_root: str, stage: int = 2):
             utterances = []
             for line in lines:
                 if line.startswith("*"):
-                    text = re.sub(r"^\*[A-Z]+:\t", "", line)  # speaker ID
+                    text = re.sub(r"^\*[A-Z]+:[\t ]+", "", line)  # speaker ID
                     text = re.sub(r"\[.*?\]", "", text)        # [brackets]
                     text = re.sub(r"<.*?>", "", text)          # <tags>
                     text = re.sub(r"\(+\.*\)+", "", text)      # () (..) (...)
@@ -629,6 +634,7 @@ def train(stage: int, resume: Optional[str] = None):
     log_dir  = LOG_DIR  / f"stage{stage}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir=str(log_dir / "tensorboard"))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
@@ -643,7 +649,7 @@ def train(stage: int, resume: Optional[str] = None):
 
     # ── Model ─────────────────────────────────────────────────────────────
     model_cfg = SpeakMK1LLMConfig(
-        vocab_size=50277,
+        vocab_size=50283,
         d_model=512,
         d_state=64,
         # FIXED: Use num_blocks, not num_outer_blocks/num_inner_repeats
@@ -666,6 +672,7 @@ def train(stage: int, resume: Optional[str] = None):
     
     start_step = 0
     best_loss = float("inf")
+    resume_optimizer_state = None
     
     tok = get_tokenizer()
     
@@ -680,6 +687,19 @@ def train(stage: int, resume: Optional[str] = None):
         # for name, param in model.named_parameters():
         #     print(f"{name}: mean={param.data.mean():.4f}, std={param.data.std():.4f}")
         #     break  # just first layer
+        
+        state = ckpt["model"]
+
+        # Extend output projection + embedding if checkpoint was vocab_size=50277
+        for key in list(state.keys()):
+            if state[key].shape != model.state_dict()[key].shape:
+                old = state[key]
+                new = model.state_dict()[key].clone()
+                # Copy old weights into the new (larger) tensor
+                slices = tuple(slice(0, s) for s in old.shape)
+                new[slices] = old
+                state[key] = new
+                print(f"  Extended {key}: {old.shape} -> {new.shape}")
         
         model.load_state_dict(ckpt["model"])
         
@@ -706,7 +726,7 @@ def train(stage: int, resume: Optional[str] = None):
         
         saved_stage = ckpt.get("stage")
         saved_step = ckpt["step"]
-        
+        print(f"  Checkpoint stage={saved_stage}, step={saved_step}, best_loss={ckpt.get('best_loss')}")
         # if saved_stage is None:
         #     if saved_step >= cfg["train_steps"]:
         #         print(f"  Detected checkpoint from previous stage (step {saved_step} > {cfg['train_steps']})")
@@ -732,11 +752,9 @@ def train(stage: int, resume: Optional[str] = None):
             print(f"  Fresh optimizer for Stage {stage}")
         else:
             start_step = saved_step
-            optimizer.load_state_dict(ckpt["optimizer"])
+            resume_optimizer_state = ckpt["optimizer"]
             best_loss = ckpt.get("best_loss", float("inf"))
         
-        print(f"  Starting at step {start_step}")
-            
         print(f"  Starting at step {start_step}")
 
     params = count_parameters(model)
@@ -766,7 +784,9 @@ def train(stage: int, resume: Optional[str] = None):
             fused=True,
         )
     # ── resume ───────────────────────────────────────────────────────
-    
+    if resume_optimizer_state is not None:
+        optimizer.load_state_dict(resume_optimizer_state)
+        print(f"  Optimizer state restored")
 
     # ── Timing test ───────────────────────────────────────────────────────
     # if device.type == "cuda":
@@ -903,6 +923,13 @@ def train(stage: int, resume: Optional[str] = None):
             # FIXED: Debug print uses the in-scope variable
             print(f"DEBUG: step={step}, effective_aux_weight={effective_aux_weight}, "
                   f"aux_loss={aux_loss.item():.5f}, ce_loss={ce_loss.item():.4f}")
+
+            writer.add_scalar("Loss/train",    avg_loss,            step)
+            writer.add_scalar("Loss/aux",      avg_aux,             step)
+            writer.add_scalar("LR",            lr,                  step)
+            writer.add_scalar("Grad/norm",     grad_norm.item(),    step)
+            writer.add_scalar("Tokens/M",      tokens_seen / 1e6,   step)
+            writer.add_scalar("ce_loss",       ce_loss.item(),      step)
             
             loss_acc = 0.0
             aux_acc  = 0.0
@@ -922,6 +949,7 @@ def train(stage: int, resume: Optional[str] = None):
     final_path = ckpt_dir / "ckpt_final.pt"
     _save_checkpoint(model, optimizer, total_steps, best_loss, final_path, stage)
     log_file.close()
+    writer.close()
     print(f"\n  Training complete. Final checkpoint → {final_path}")
 
 
@@ -970,49 +998,81 @@ def _save_checkpoint_async(model, optimizer, step, best_loss, path, stage):
 # 7.  CLI CHATBOT
 # ════════════════════════════════════════════════════════════════════════════
 
+def _extract_slp_response(raw_text: str) -> str:
+    import re
+    # Strip think block
+    text = re.sub(r"<\|think\|>.*?<\|endturn\|>", "", raw_text, flags=re.DOTALL)
+    # Strip remaining special tokens
+    for token in SPECIAL_TOKENS.values():
+        text = text.replace(token, "")
+    return text.strip()
+
 def chat(checkpoint_path: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
     torch.backends.cudnn.benchmark = True
+
     print(f"\n{'='*60}")
-    print(f"  SpeakMK1 LLM — CLI Chat")
-    print(f"  Device   : {device}")
+    print(f"  SpeakMK1 LLM -- CLI Chat")
+    print(f"  Device    : {device}")
     print(f"  Checkpoint: {checkpoint_path}")
     print(f"{'='*60}")
 
-    print("\n  Loading model …")
+    print("\n  Loading model ...")
     torch.serialization.add_safe_globals([SpeakMK1LLMConfig])
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    
-    saved_cfg = ckpt.get("model_cfg", None)
-    if saved_cfg is not None:
-        model_cfg = saved_cfg
-    else:
-        model_cfg = SpeakMK1LLMConfig()
 
-    model = SpeakMK1LLM(model_cfg).to(device)
+    saved_cfg  = ckpt.get("model_cfg", None)
+    model_cfg  = saved_cfg if saved_cfg is not None else SpeakMK1LLMConfig()
+    model      = SpeakMK1LLM(model_cfg).to(device)
     model.load_state_dict(ckpt["model"])
     model.eval()
 
     params = count_parameters(model)
-    print(f"  Parameters: {params['total_M']}M")
-    print(f"  Loaded from step: {ckpt.get('step', 'unknown')}")
-    print(f"  Best loss: {ckpt.get('best_loss', 'unknown')}")
+    print(f"  Parameters  : {params['total_M']}M")
+    print(f"  Loaded step : {ckpt.get('step', 'unknown')}")
+    print(f"  Best loss   : {ckpt.get('best_loss', 'unknown')}")
 
-    tok = get_tokenizer()
+    tok = get_tokenizer()  # now includes special tokens
 
-    temperature = 0.8
-    top_p       = 0.9
-    max_new     = 200
-    history     = []
+    # Pre-compute stop token ids
+    eos_id     = tok.eos_token_id
+    endturn_id = tok.encode(SPECIAL_TOKENS["turn_end"], add_special_tokens=False)[0]
+
+    # ── Session state ──────────────────────────────────────────────────────
+    temperature  = 0.8
+    top_p        = 0.9
+    max_new      = 200
+    history: list[int] = []
+    system_injected  = False
+
+    # Default clinical context — can be changed via /context command
+    clinical_context = dict(
+        age            = "6",
+        disorder       = "articulation disorder",
+        specific_error = "rhotacism",
+        clinical_goal  = "correct /r/ production",
+        strategy       = "minimal pairs and modeling",
+    )
+
+    def inject_system():
+        nonlocal system_injected
+        system_text = (
+            SPECIAL_TOKENS["system_start"] + " " +
+            SYSTEM_PROMPT_TEMPLATE.format(**clinical_context) + " " +
+            SPECIAL_TOKENS["turn_end"]
+        )
+        sys_ids = tok.encode(system_text, add_special_tokens=False)
+        history.extend(sys_ids)
+        system_injected = True
 
     print(f"\n  Ready. Type a prompt and press Enter.")
-    print(f"  Commands: /help /temp /top_p /maxlen /reset /quit")
-    print(f"  Temperature: {temperature} | top_p: {top_p} | max_new: {max_new}\n")
+    print(f"  Commands: /help /temp /top_p /maxlen /context /reset /quit")
+    print(f"  Temperature: {temperature}  top_p: {top_p}  max_new: {max_new}\n")
 
     while True:
         try:
-            user_input = input("You: ").strip()
+            user_input = input("Child: ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\n  Bye.")
             break
@@ -1020,6 +1080,7 @@ def chat(checkpoint_path: str):
         if not user_input:
             continue
 
+        # ── Commands ───────────────────────────────────────────────────────
         if user_input.startswith("/"):
             parts = user_input.split()
             cmd   = parts[0].lower()
@@ -1030,77 +1091,130 @@ def chat(checkpoint_path: str):
 
             elif cmd == "/help":
                 print("  Commands:")
-                print("    /temp <float>   — generation temperature (default 0.8)")
-                print("    /top_p <float>  — nucleus sampling threshold (default 0.9)")
-                print("    /maxlen <int>   — max new tokens (default 200)")
-                print("    /reset          — clear conversation history")
-                print("    /quit           — exit")
+                print("    /temp <float>         -- generation temperature (default 0.8)")
+                print("    /top_p <float>        -- nucleus sampling (default 0.9)")
+                print("    /maxlen <int>         -- max new tokens (default 200)")
+                print("    /context              -- show current clinical context")
+                print("    /context <key> <val>  -- update clinical context field")
+                print("      keys: age, disorder, specific_error, clinical_goal, strategy")
+                print("    /reset                -- clear conversation history")
+                print("    /quit                 -- exit")
                 print(f"  Current: temp={temperature} top_p={top_p} maxlen={max_new}")
 
             elif cmd == "/temp" and len(parts) > 1:
                 temperature = float(parts[1])
-                print(f"  Temperature → {temperature}")
+                print(f"  Temperature set to {temperature}")
 
             elif cmd == "/top_p" and len(parts) > 1:
                 top_p = float(parts[1])
-                print(f"  top_p → {top_p}")
+                print(f"  top_p set to {top_p}")
 
             elif cmd == "/maxlen" and len(parts) > 1:
                 max_new = int(parts[1])
-                print(f"  max_new_tokens → {max_new}")
+                print(f"  max_new_tokens set to {max_new}")
+
+            elif cmd == "/context":
+                if len(parts) == 1:
+                    # Print current context
+                    for k, v in clinical_context.items():
+                        print(f"    {k}: {v}")
+                elif len(parts) >= 3:
+                    key = parts[1]
+                    val = " ".join(parts[2:])
+                    if key in clinical_context:
+                        clinical_context[key] = val
+                        print(f"  {key} set to: {val}")
+                        print(f"  Use /reset to apply new context to conversation.")
+                    else:
+                        print(f"  Unknown key '{key}'. Valid keys: {list(clinical_context.keys())}")
 
             elif cmd == "/reset":
-                history = []
+                history.clear()
+                system_injected = False
                 print("  History cleared.")
 
             else:
-                print(f"  Unknown command: {cmd}. Type /help for commands.")
+                print(f"  Unknown command: {cmd}. Type /help.")
             continue
 
-        completion_prompt = f"The following is a continuation of text:\n\n{user_input}"
-        new_ids = tok.encode(completion_prompt, add_special_tokens=False)
+        # ── Inject system prompt on first real turn ────────────────────────
+        if not system_injected:
+            inject_system()
 
+        # ── Encode child utterance with special tokens ─────────────────────
+        child_text = (
+            SPECIAL_TOKENS["child_start"] + " " +
+            user_input + " " +
+            SPECIAL_TOKENS["turn_end"] +
+            SPECIAL_TOKENS["think_start"]   # prime model to think before responding
+        )
+        new_ids = tok.encode(child_text, add_special_tokens=False)
         history.extend(new_ids)
+
+        # Trim history to last 512 tokens to avoid OOM
         if len(history) > 512:
-            history = history[-512:]
+            # Always keep system prompt (first chunk up to turn_end)
+            # Find end of system block
+            system_end_marker = tok.encode(
+                SPECIAL_TOKENS["turn_end"], add_special_tokens=False
+            )[0]
+            try:
+                sys_end_idx = history.index(system_end_marker) + 1
+            except ValueError:
+                sys_end_idx = 0
+            system_ids  = history[:sys_end_idx]
+            recent_ids  = history[sys_end_idx:][-512 + sys_end_idx:]
+            history     = system_ids + recent_ids
 
         input_ids = torch.tensor([history], dtype=torch.long, device=device)
 
-        print("Model: ", end="", flush=True)
+        print("SLP: ", end="", flush=True)
 
         with torch.no_grad():
             output_ids = _generate_streaming(
-                model=model,
-                input_ids=input_ids,
-                max_new_tokens=max_new,
-                temperature=temperature,
-                top_p=top_p,
-                eos_token_id=tok.eos_token_id,
-                tokenizer=tok,
+                model          = model,
+                input_ids      = input_ids,
+                max_new_tokens = max_new,
+                temperature    = temperature,
+                top_p          = top_p,
+                eos_token_id   = eos_id,
+                endturn_id     = endturn_id,
+                tokenizer      = tok,
             )
 
-        generated_ids = output_ids[0, input_ids.shape[1]:].tolist()
-        history.extend(generated_ids)
-        if len(history) > 512:
-            history = history[-512:]
+        # Decode full generated portion for history + display cleanup
+        generated_ids   = output_ids[0, input_ids.shape[1]:].tolist()
+        raw_generated   = tok.decode(generated_ids, skip_special_tokens=False)
+        clean_response  = _extract_slp_response(raw_generated)
+
+        # Add SLP response to history (with proper tokens so model sees full context)
+        slp_text = (
+            SPECIAL_TOKENS["slp_start"] + " " +
+            clean_response + " " +
+            SPECIAL_TOKENS["turn_end"]
+        )
+        history.extend(tok.encode(slp_text, add_special_tokens=False))
 
         print()
 
 
+
 def _generate_streaming(
-    model:         SpeakMK1LLM,
-    input_ids:     torch.Tensor,
+    model:          SpeakMK1LLM,
+    input_ids:      torch.Tensor,
     max_new_tokens: int,
-    temperature:   float,
-    top_p:         float,
-    eos_token_id:  int,
+    temperature:    float,
+    top_p:          float,
+    eos_token_id:   int,
+    endturn_id:     int,
     tokenizer,
 ) -> torch.Tensor:
     generated = input_ids
     partial   = []
 
     for _ in range(max_new_tokens):
-        with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=(input_ids.device.type == "cuda")):
+        with torch.amp.autocast("cuda", dtype=torch.bfloat16,
+                                enabled=(input_ids.device.type == "cuda")):
             logits, _, _ = model(generated)
 
         next_logits = logits[:, -1, :].float()
@@ -1109,18 +1223,18 @@ def _generate_streaming(
             next_logits = next_logits / temperature
 
         next_logits = _top_p_filter(next_logits, top_p)
+        probs       = torch.softmax(next_logits, dim=-1)
+        next_token  = torch.multinomial(probs, num_samples=1)
+        token_id    = next_token.item()
 
-        probs      = torch.softmax(next_logits, dim=-1)
-        next_token = torch.multinomial(probs, num_samples=1)
-
-        token_id = next_token.item()
-
-        if token_id == eos_token_id:
+        # Stop at EOS or end-of-turn
+        if token_id in (eos_token_id, endturn_id):
             break
 
         generated = torch.cat([generated, next_token], dim=1)
         partial.append(token_id)
 
+        # Stream partial decoded text
         try:
             text = tokenizer.decode(partial, skip_special_tokens=True)
             if text.endswith(" ") or len(partial) > 6:
@@ -1170,7 +1284,7 @@ Examples:
     subparsers = parser.add_subparsers(dest="command")
 
     p_tok = subparsers.add_parser("tokenize", help="Tokenize datasets for a stage")
-    p_tok.add_argument("--stage", type=int, required=True, choices=[1, 2, 3, 4])
+    p_tok.add_argument("--stage", type=int, required=True, choices=[1, 2, 3, 4, 5])
 
     p_childes = subparsers.add_parser("tokenize_childes", help="Tokenize local CHILDES .cha files")
     p_childes.add_argument("--path", type=str, required=True, help="Root directory of CHILDES .cha files")
@@ -1185,7 +1299,7 @@ Examples:
     p_pubmed.add_argument("--stage", type=int, default=3)
 
     p_train = subparsers.add_parser("train", help="Train the model")
-    p_train.add_argument("--stage",  type=int, required=True, choices=[1, 2, 3, 4])
+    p_train.add_argument("--stage",  type=int, required=True, choices=[1, 2, 3, 4, 5])
     p_train.add_argument("--resume", type=str, default=None,
                          help="Path to checkpoint to resume from")
 
