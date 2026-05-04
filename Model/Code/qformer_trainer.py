@@ -78,7 +78,7 @@ class TrainConfig:
     accumulation_steps = 4
     
     # Paths
-    checkpoint_path = "../Model_files/audio_encoder_epoch_19.pt" # Your Phase 1 weights
+    checkpoint_path = "../Model_files/Audio_encoder_v1.1/audio_encoder_epoch_5.pt" # Your Phase 1 weights
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. MAIN TRAINING LOOP
@@ -87,7 +87,7 @@ class TrainConfig:
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cfg = TrainConfig()
-    temperature = nn.Parameter(torch.tensor(0.5, device=device))
+    temperature = nn.Parameter(torch.tensor(0.5, device=device).to(torch.bfloat16))
 
     # --- A. Load Dataset ---
     dataset = LibriSpeechByteDataset(
@@ -116,9 +116,10 @@ def train():
 
     # 2. LLM
     model_cfg = SpeakMK1LLMConfig(
-        vocab_size=50277,
+        vocab_size=50283,
         d_model=512,
         d_state=64,
+        # FIXED: Use num_blocks, not num_outer_blocks/num_inner_repeats
         num_blocks=6,
         nheads_ssm=8,
         nheads_attn=8,
@@ -129,7 +130,7 @@ def train():
         aux_loss_weight=1e-2,
     )
     llm = SpeakMK1LLM(model_cfg).to(device)
-    llm_checkpoint = "../Model_files/checkpoints_v2/stage1/ckpt_final.pt"
+    llm_checkpoint = "../Model_files/checkpoints_v2.3.1/stage4/ckpt_final.pt"
     ckpt = torch.load(llm_checkpoint, map_location=device, weights_only=False)
     llm.load_state_dict(ckpt['model'])
     audio_projection = nn.Sequential(
@@ -155,9 +156,6 @@ def train():
         if 'qformer' in name:
             param.requires_grad = True
             print(f"  > Training Q-Former: {name}")
-        elif 'blocks.4' in name or 'blocks.5' in name or 'blocks.3' in name:
-            param.requires_grad = True
-            print(f"  > Training Backbone Block: {name}")
         else:
             param.requires_grad = False
 
@@ -179,7 +177,7 @@ def train():
     cosine = CosineAnnealingLR(optimizer, T_max=cfg.epochs * len(loader) - 100)
     scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[100])
     
-    scaler = GradScaler(device.type)
+    # scaler = GradScaler(device.type)
 
     # --- E. Training Loop ---
     print("Starting Phase 2: Q-Former Alignment...")
@@ -191,6 +189,9 @@ def train():
     #     if 'qformer' in name:
     #         print(f"{name} | requires_grad={param.requires_grad}")
     # time.sleep(2) # Just a moment to review the printout before training starts
+
+    global_step = 0
+    print(f"Trainable params: {sum(p.numel() for p in trainable_params)/1e6:.2f}M")
 
     for epoch in range(cfg.epochs):
         total_loss = 0
@@ -206,16 +207,16 @@ def train():
                 audio_out_raw, _ = audio_encoder(mel)
                 audio_embeds = audio_projection(audio_out_raw)  # (B, num_queries, d_model)
 
-                # ── ATC loss (contrastive) ──
-                audio_norm = F.normalize(audio_embeds.mean(dim=1), dim=-1)  # (B, d_model)
-                text_norm = F.normalize(text_embeds.mean(dim=1).detach(), dim=-1)  # (B, d_model)
-                sim_a2t = audio_norm @ text_norm.T / temperature.clamp(min=0.01)  # (B, B)
-                sim_t2a = sim_a2t.T
-                targets = torch.arange(audio_norm.shape[0], device=device)
-                loss_atc = (
-                    F.cross_entropy(sim_a2t, targets, label_smoothing=0.1) +
-                    F.cross_entropy(sim_t2a, targets, label_smoothing=0.1)
-                ) / 2
+                # # ── ATC loss (contrastive) ──
+                # audio_norm = F.normalize(audio_embeds.mean(dim=1), dim=-1)  # (B, d_model)
+                # text_norm = F.normalize(text_embeds.mean(dim=1).detach(), dim=-1)  # (B, d_model)
+                # sim_a2t = audio_norm @ text_norm.T / temperature.abs().clamp(min=0.01)
+                # sim_t2a = sim_a2t.T
+                # targets = torch.arange(audio_norm.shape[0], device=device)
+                # loss_atc = (
+                #     F.cross_entropy(sim_a2t, targets, label_smoothing=0.1) +
+                #     F.cross_entropy(sim_t2a, targets, label_smoothing=0.1)
+                # ) / 2
 
                 # ── LM loss (force qformer output useful to llm) ──
                 # concat audio queries + text, predict next text token
@@ -227,7 +228,7 @@ def train():
                     )
                     labels = torch.cat([audio_labels, byte_ids], dim=1)
 
-                inputs_embeds = torch.cat([audio_embeds, text_embeds.detach()], dim=1)
+                inputs_embeds = torch.cat([audio_embeds, text_embeds], dim=1)
                 logits, loss_lm, _ = llm(
                     inputs_embeds=inputs_embeds,
                     labels=labels,
@@ -237,39 +238,57 @@ def train():
                 query_sim = torch.bmm(Q_norm, Q_norm.transpose(1,2))  # (B, Q, Q)
                 eye = torch.eye(query_sim.shape[1], device=device).unsqueeze(0)
                 loss_div = (query_sim * (1 - eye)).pow(2).mean()
-                loss = loss_atc + 0.5 * loss_lm + 0.1 * loss_div
+                div_weight = 0.1
+                audio_mean = audio_embeds.mean(dim=1)  # (B, 512)
+                text_mean = text_embeds.mean(dim=1).detach()  # (B, 512)
+
+                # L2 alignment in embedding space
+                loss_align = F.mse_loss(
+                    F.normalize(audio_mean, dim=-1),
+                    F.normalize(text_mean, dim=-1)
+                )
+                loss = 0.5 * loss_lm + 0.1 * loss_div + 0.5 * loss_align
                 total_step_loss = loss / cfg.accumulation_steps
                 # print(f"sim shape: {sim.shape}")
                 # print(f"targets shape: {targets.shape}, max: {targets.max()}, min: {targets.min()}")
                 # print(f"sim min: {sim.min():.4f}, max: {sim.max():.4f}, mean: {sim.mean():.4f}")
             # Backward
-            scaler.scale(total_step_loss).backward()
-            
+            total_step_loss.backward()
             # Optimizer Step
             if (i + 1) % cfg.accumulation_steps == 0:
-                scaler.unscale_(optimizer)
+                # scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
-                for name, param in audio_encoder.named_parameters():
-                    if 'qformer' in name and param.grad is not None:
-                        print(f"GRAD OK | {name} | norm={param.grad.norm().item():.6f}")
-                        break
-                else:
-                    print("WARNING: no qformer gradients found!")
-                scaler.step(optimizer)
-                scaler.update()
+                if global_step % 100 == 0:
+                    for name, param in audio_encoder.named_parameters():
+                        if 'qformer' in name and param.grad is not None:
+                            print(f"GRAD OK | {name} | norm={param.grad.norm().item():.6f}")
+                            break
+                    else:
+                        print("WARNING: no qformer gradients found!")
+                # scaler.step(optimizer)
+                # scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
                 total_loss += total_step_loss.item() * cfg.accumulation_steps
-                print(f"Epoch {epoch} | Step {i} | Loss: {total_step_loss.item() * cfg.accumulation_steps:.4f}")
-
-        avg_loss = total_loss / (len(loader) // cfg.accumulation_steps * cfg.accumulation_steps)
+                print(f"Epoch {epoch} | Step {i} | "
+                f"total={loss.item():.4f} | "
+                f"lm={loss_lm.item():.4f} | "
+                f"div={loss_div.item():.4f}")
+                global_step += 1
+                
+        num_optimizer_steps = len(loader) // cfg.accumulation_steps
+        avg_loss = total_loss / max(num_optimizer_steps, 1)
         print(f"--- Epoch {epoch} Complete | Avg Loss: {avg_loss:.4f} ---")
         
         # Save Checkpoint (Saving only the Q-Former state dict is usually cleaner)
         torch.save({
-            'encoder': audio_encoder.state_dict(),
+            'encoder'   : audio_encoder.state_dict(),
             'projection': audio_projection.state_dict(),
-        }, f"../Model_files/qformer_v2/qformer_aligned_epoch_{epoch}.pt")
+            'optimizer' : optimizer.state_dict(),
+            'scheduler' : scheduler.state_dict(),
+            'epoch'     : epoch,
+        }, f"../Model_files/qformer_v3.1/qformer_aligned_epoch_{epoch}.pt")
 
 if __name__ == "__main__":
     train()

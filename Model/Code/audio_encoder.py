@@ -84,13 +84,11 @@ class CgMLP(nn.Module):
         self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
         x = self.norm(x)
         gate, val = self.gate_proj(x).chunk(2, dim=-1)
         gate = F.silu(gate)
         val = self.dw_conv(val.transpose(1, 2)).transpose(1, 2)
-        x = self.out_proj(self.drop(gate * val))
-        return x + residual
+        return self.out_proj(self.drop(gate * val))
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -135,7 +133,7 @@ class BiMambaMoECgMLPBlock(nn.Module):
                 attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         moe_out = self.bi_mamba_moe(x)
         cgmlp_out = self.cgmlp(x)
-        return self.merge_norm(moe_out + cgmlp_out)
+        return self.merge_norm(x + moe_out + cgmlp_out)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -173,14 +171,16 @@ class SharedPhonologicalLayer(nn.Module):
             })
 
     def forward(self, x, labels=None):
-        x = self.proj(F.silu(self.norm(x)))
+        normed = self.norm(x)
+        projected = self.proj(F.silu(normed))
+        x = x + projected 
 
         losses = None
         if self.training_heads and labels is not None:
             losses = {}
             for name, head in self.heads.items():
                 if name in labels:
-                    logits = head(x)                          # (B, T, C)
+                    logits = head(normed)                          # (B, T, C)
                     tgt = labels[name]                        # (B, T)
                     n_classes = logits.size(-1)
                     
@@ -208,7 +208,8 @@ class QFormerProjection(nn.Module):
     def __init__(self, d_model: int, llm_dim: int, num_queries: int = 64,
                  num_heads: int = 8, num_layers: int = 2, dropout: float = 0.1):
         super().__init__()
-        self.queries = nn.Parameter(torch.randn(1, num_queries, d_model) * 0.02)
+        self.queries = nn.Parameter(torch.empty(1, num_queries, d_model))
+        nn.init.trunc_normal_(self.queries, std=0.02 * math.sqrt(d_model))
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=d_model, nhead=num_heads,
             dim_feedforward=d_model * 4,
@@ -226,6 +227,25 @@ class QFormerProjection(nn.Module):
                                memory_key_padding_mask=memory_key_padding_mask)
         return self.out_proj(out)
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# 5b.  DIRECT PROJECTION (Cuz the Qformer refuses to learn anything in early tests)
+# ════════════════════════════════════════════════════════════════════════════
+
+class DirectProjection(nn.Module):
+    def __init__(self, d_model: int, llm_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.norm = RMSNorm(d_model)
+        self.proj = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, llm_dim),
+        )
+
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        # x: (B, T, d_model) → (B, T, llm_dim)
+        return self.proj(self.norm(x))
 
 # ════════════════════════════════════════════════════════════════════════════
 # 6.  CONFIG
@@ -300,7 +320,6 @@ class AudioEncoder(nn.Module):
         # ── Stem: project n_mels → d_model ────────────────────────────────
         self.stem = nn.Sequential(
             nn.Linear(cfg.n_mels, D),
-            RMSNorm(D),
             nn.GELU(),
         )
 
@@ -368,6 +387,19 @@ class AudioEncoder(nn.Module):
     def _make_key_padding_mask(mel: torch.Tensor) -> torch.Tensor:
         """Returns (B, T) bool mask; True where frame is padding."""
         return (mel.sum(dim=-1) == 0)
+    
+    def encode_features(self, mel, attention_mask=None):
+        """Returns raw (B, T, d_model) before QFormer."""
+        x = self.stem(mel)
+        for layer in self.uni_mamba_layers:
+            x = layer(x)
+        pad_mask = (attention_mask == 0) if attention_mask is not None \
+                    else self._make_key_padding_mask(mel)
+        x = self.rms_att(x, key_padding_mask=pad_mask)
+        for layer in self.bi_mamba_moe_layers:
+            x = layer(x)
+        x, _ = self.phonological(x)
+        return x   # (B, T, d_model) — feeds into DirectAudioProjection
 
     def forward(
         self,

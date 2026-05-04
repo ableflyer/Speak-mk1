@@ -19,7 +19,7 @@ loader = DataLoader(dataset, batch_size=8, shuffle=False, collate_fn=collate_fn)
 # ── load models ──
 audio_cfg = SmallConfig(d_model=512, llm_dim=4096)
 audio_encoder = AudioEncoder(audio_cfg).to(device)
-audio_ckpt = torch.load("../Model_files/qformer/qformer_aligned_epoch_3.pt", map_location=device)
+audio_ckpt = torch.load("../Model_files/qformer_v3.1/qformer_aligned_epoch_0.pt", map_location=device)
 audio_encoder.load_state_dict(audio_ckpt['encoder'])
 audio_encoder.eval()
 qformer_params = {k:v for k,v in audio_encoder.named_parameters() 
@@ -28,12 +28,12 @@ print(list(qformer_params.keys())[:5])  # Do keys exist?
 print(next(iter(qformer_params.values())).mean())
 
 model_cfg = SpeakMK1LLMConfig(
-    vocab_size=50277, d_model=512, d_state=64, num_blocks=6,
+    vocab_size=50283, d_model=512, d_state=64, num_blocks=6,
     nheads_ssm=8, nheads_attn=8, top_k_audio=32,
     num_experts=4, top_k_experts=2, dropout=0.0, aux_loss_weight=1e-2,
 )
 llm = SpeakMK1LLM(model_cfg).to(device)
-ckpt = torch.load("../Model_files/checkpoints_v2/stage1/ckpt_final.pt", map_location=device, weights_only=False)
+ckpt = torch.load("../Model_files/checkpoints_v2.3.1/stage4/ckpt_final.pt", map_location=device, weights_only=False)
 llm.load_state_dict(ckpt['model'])
 llm.eval()
 

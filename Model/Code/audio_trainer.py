@@ -21,6 +21,19 @@ class SmallConfig(AudioEncoderConfig):
     dropout: float = 0.15
     training_heads: bool = True
 
+def reinit_qformer(audio_encoder):
+    for name, module in audio_encoder.qformer.named_modules():
+        if isinstance(module, nn.Linear):
+            nn.init.trunc_normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+    # Reinit learned queries specifically
+    if hasattr(audio_encoder.qformer, 'queries'):
+        nn.init.trunc_normal_(audio_encoder.qformer.queries, std=0.02)
+    print("Q-Former reinitialised.")
 
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -91,7 +104,7 @@ def train():
         scheduler.step()
         print(f"--- Epoch {epoch} Complete | Avg Loss: {total_loss_epoch / len(train_loader):.4f} ---")
 
-        torch.save(model.state_dict(), f"../Model_files/audio_encoder_epoch_{epoch}.pt")
+        torch.save(model.state_dict(), f"../Model_files/Audio_encoder_v1.2/audio_encoder_epoch_{epoch}.pt")
 
 
 if __name__ == "__main__":

@@ -6,15 +6,13 @@ device = torch.device("cuda")
 tok = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
 
 # load checkpoint
-ckpt = torch.load("./../Model_files/checkpoints_v2.3/stage1/ckpt_step50000.pt", map_location=device, weights_only=False)
+ckpt = torch.load("./../Model_files/checkpoints_v2.3.1/stage1/ckpt_final.pt", map_location=device, weights_only=False)
 model_cfg = ckpt["model_cfg"]
 model = SpeakMK1LLM(model_cfg).to(device)
 model.load_state_dict(ckpt["model"])
 model.eval()
 prompts = [
-    "The little dog ran to",
-    "Once upon a time there was a",
-    "She said to her friend",
+    "I wanna pway wif da baww"
 ]
 with torch.no_grad():
     for prompt in prompts:
