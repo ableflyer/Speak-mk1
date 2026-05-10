@@ -89,7 +89,7 @@ class CrossModelSparseAttention(nn.Module):
         # Initialised to 0 → tanh(0) = 0 → no audio influence at init
         # Gradually opens as training progresses
         if use_gate:
-            self.gate = nn.Parameter(torch.zeros(1))
+            self.gate = nn.Parameter(torch.tensor(0.1))
 
         self.attn_drop = nn.Dropout(dropout)
 
@@ -163,42 +163,34 @@ class CrossModelSparseAttention(nn.Module):
         # V:            (B, H, T_audio, headdim)
         # topk_indices: (B, H, T_text, k)
         # We need:      (B, H, T_text, k, headdim)
-        topk_indices_exp = topk_indices.unsqueeze(-1).expand(
-            B, self.nheads, T_text, k, self.headdim
-        )
-        # .contiguous() is critical — without it .expand() creates a memory-sharing
-        # view and .gather() reads from the original V storage for ALL positions,
-        # including unselected frames, breaking the sparsity guarantee.
-        V_exp = V.unsqueeze(2).expand(
-            B, self.nheads, T_text, T_audio, self.headdim
-        ).contiguous()
-        V_selected = V_exp.gather(
-            dim=3, index=topk_indices_exp
-        )  # (B, H, T_text, k, headdim)
+        # topk_indices_exp = topk_indices.unsqueeze(-1).expand(
+        #     B, self.nheads, T_text, k, self.headdim
+        # )
+        # V_exp = V.unsqueeze(2).expand(
+        #     B, self.nheads, T_text, T_audio, self.headdim
+        # ).contiguous()
+        # V_selected = V_exp.gather(
+        #     dim=3, index=topk_indices_exp
+        # )  # (B, H, T_text, k, headdim)
 
-        # Weighted sum over k selected frames
-        # attn_weights: (B, H, T_text, k) → (B, H, T_text, k, 1)
+        # # Weighted sum over k selected frames
+        # # attn_weights: (B, H, T_text, k) → (B, H, T_text, k, 1)
+        # out = (attn_weights.unsqueeze(-1) * V_selected).sum(dim=3)  # (B, H, T_text, headdim)
+        
+        # Reshape indices: (B, H, T_text*k)
+        idx_flat = topk_indices.reshape(B, self.nheads, T_text * k)
+
+        # Expand headdim dim: (B, H, T_text*k, headdim)
+        idx_flat_exp = idx_flat.unsqueeze(-1).expand(-1, -1, -1, self.headdim)
+
+        # Gather from V along dim=2: (B, H, T_text*k, headdim)
+        V_gathered = V.gather(dim=2, index=idx_flat_exp)
+
+        # Reshape back: (B, H, T_text, k, headdim)
+        V_selected = V_gathered.reshape(B, self.nheads, T_text, k, self.headdim)
+
+        # Weighted sum
         out = (attn_weights.unsqueeze(-1) * V_selected).sum(dim=3)
-
-        # Gather the corresponding values
-        # V:            (B, H, T_audio, headdim)
-        # topk_indices: (B, H, T_text, k)
-        # We need:      (B, H, T_text, k, headdim)
-        topk_indices_exp = topk_indices.unsqueeze(-1).expand(
-            B, self.nheads, T_text, k, self.headdim
-        )
-        # Expand V along the T_text dimension for gathering
-        V_exp = V.unsqueeze(2).expand(
-            B, self.nheads, T_text, T_audio, self.headdim
-        )
-        V_selected = V_exp.gather(
-            dim=3, index=topk_indices_exp
-        )  # (B, H, T_text, k, headdim)
-
-        # Weighted sum over k selected frames
-        # attn_weights: (B, H, T_text, k) → (B, H, T_text, k, 1)
-        out = (attn_weights.unsqueeze(-1) * V_selected).sum(dim=3)
-        # out: (B, H, T_text, headdim)
 
         # Merge heads: (B, T_text, D)
         out = out.transpose(1, 2).contiguous().view(B, T_text, D)

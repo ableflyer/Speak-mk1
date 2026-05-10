@@ -1,9 +1,6 @@
-import numpy as np
-from transformers import AutoTokenizer
-
-tok = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
-data = np.memmap("./../Data/LLM_Data_updated/stage3_pubmed.bin", dtype=np.uint16, mode="r")
-
-# decode first 500 tokens and inspect
-sample = tok.decode(data[:500].astype(np.int64))
-print(sample)
+from multimodal_training import get_tokenizer, MultimodalTrainConfig
+cfg = MultimodalTrainConfig()
+tokenizer = get_tokenizer(cfg)
+print(tokenizer.convert_tokens_to_ids("<|endturn|>"))   # should be non-zero
+print(tokenizer.convert_tokens_to_ids("<|ctc_blank|>")) # should be non-zero
+print(len(tokenizer))                                    # should be 50291

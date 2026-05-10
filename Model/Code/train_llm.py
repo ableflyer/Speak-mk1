@@ -1049,10 +1049,10 @@ def chat(checkpoint_path: str):
     # Default clinical context — can be changed via /context command
     clinical_context = dict(
         age            = "6",
-        disorder       = "articulation disorder",
-        specific_error = "rhotacism",
-        clinical_goal  = "correct /r/ production",
-        strategy       = "minimal pairs and modeling",
+        disorder       = "Stopping",
+        specific_error = "Stopping of /s/ and /z/ (s/z → t/d)",
+        clinical_goal  = "Establish /s/ using airflow awareness",
+        strategy       = "Tactile Cueing (touching alveolar ridge awareness)",
     )
 
     def inject_system():

@@ -148,6 +148,13 @@ def load_llm(cfg: ProjTrainConfig, device: torch.device) -> SpeakMK1LLM:
     # through audio_out so gradients flow back into audio_proj.
     for param in model.parameters():
         param.requires_grad = False
+        
+    for block in model.blocks:
+        if hasattr(block.cross_attn, 'gate'):
+            block.cross_attn.gate.data.fill_(1.0)  # tanh(1.0) = 0.76, open enough
+            block.cross_attn.gate.requires_grad = True  # let it tune during proj training
+    
+    
     model.eval()
     return model
 
@@ -175,6 +182,11 @@ def train():
     audio_proj = init_projection(cfg.audio_d_model, cfg.llm_d_model, device)
     print(f"  Trainable params : "
           f"{sum(p.numel() for p in audio_proj.parameters())/1e6:.3f}M\n")
+    
+    for i, block in enumerate(llm.blocks):
+        if hasattr(block.cross_attn, 'gate'):
+            g = block.cross_attn.gate.item()
+            print(f"  block[{i}] gate={g:.4f}  tanh={torch.tanh(torch.tensor(g)):.4f}")
 
     # ── Data ──────────────────────────────────────────────────────────────
     dataset = CachedFeatDataset(cfg.cache_dir)
@@ -227,11 +239,14 @@ def train():
             with autocast(device.type, dtype=torch.bfloat16):
                 # ── Project audio features ────────────────────────────
                 audio_out = audio_proj(feats)   # (B, T_audio, llm_d_model)
-                print(f"audio_out.requires_grad: {audio_out.requires_grad}")
-                print(f"audio_out.grad_fn: {audio_out.grad_fn}")
+                # print(f"audio_out.requires_grad: {audio_out.requires_grad}")
+                # print(f"audio_out.grad_fn: {audio_out.grad_fn}")
                 # ── Build labels ──────────────────────────────────────
                 # Mask pad positions with -100 so CE loss ignores them.
                 # Use the actual GPT-NeoX pad token ID, not hardcoded 0.
+                if epoch == 0 and step == 0:
+                    audio_out.retain_grad()
+                    
                 labels = token_ids.clone()
                 labels[labels == cfg.pad_token_id] = -100
 
@@ -248,12 +263,24 @@ def train():
                             f"(cfg.pad_token_id={cfg.pad_token_id}) or corrupt cache.\n"
                             "Check: AutoTokenizer.from_pretrained('EleutherAI/gpt-neox-20b').eos_token_id"
                         )
-
+                    audio_out_test = audio_proj(feats)
+                    audio_out_test.retain_grad()
+                    
+                    # run just the cross attention of first block
+                    text_hidden = llm.embed_proj(llm.embedding(token_ids))  # or however you get initial hidden states
+                    ca_out = llm.blocks[0].cross_attn(
+                        text_hidden=text_hidden,
+                        audio_out=audio_out_test,
+                        audio_padding_mask=audio_padding_mask,
+                    )
+                    ca_out.sum().backward()
+                    print(f"cross_attn grad on audio_out: {audio_out_test.grad}")
                 # ── LLM forward (frozen weights, live compute graph) ──
                 # audio_out.requires_grad=True because audio_proj is trained.
                 # LLM weights have requires_grad=False but the forward pass
                 # still builds a graph through audio_out, so gradients
                 # flow back into audio_proj correctly.
+                
                 logits, lm_loss, aux_loss = llm(
                     input_ids          = token_ids,
                     labels             = labels,
@@ -274,6 +301,9 @@ def train():
                 total_loss = (lm_loss + aux_loss) / cfg.accumulation_steps
 
             total_loss.backward()
+            if epoch == 0 and step == 0:
+                print(f"lm_loss.grad_fn: {lm_loss.grad_fn}")
+                print(f"audio_out.grad: {audio_out.grad}")
 
             if (step + 1) % cfg.accumulation_steps == 0:
                 grad_norm = torch.nn.utils.clip_grad_norm_(

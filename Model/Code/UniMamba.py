@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+import traceback
 
 
 class RMSNorm(nn.Module):
@@ -13,10 +14,13 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
+        if x.shape[-1] != self.weight.shape[0]:
+            print(f"RMSNorm shape mismatch: x={x.shape}, weight={self.weight.shape}")
+            traceback.print_stack()
         orig_dtype = x.dtype
         x_fp32 = x.float()  # upcast to fp32 for numerical stability
         norm = x_fp32.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        return ((x_fp32 * norm).to(orig_dtype) * self.weight).clone()
+        return ((x_fp32 * norm).to(orig_dtype) * self.weight)
 
 
 class RoPE(nn.Module):

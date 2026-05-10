@@ -581,12 +581,12 @@ def main(checkpoint: str, librispeech_root: str, mfa_root: str, n_batches: int =
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint",
-                        default="../Model_files/audio_encoder_epoch_19.pt",
+                        default="../Model_files/Audio_encoder_v1.1/audio_encoder_epoch_2.pt",
                         help="Path to audio encoder checkpoint")
     parser.add_argument("--librispeech_root",
-                        default="../Data/PhonemeDatasets/LibriSpeech/LibriSpeech/train-clean-100")
+                        default="../Data/PhonemeDatasets/LibriSpeech/LibriSpeech/test-clean")
     parser.add_argument("--mfa_root",
-                        default="../Data/PhonemeDatasets/LibriSpeech/LibriSpeech/train-clean-100-mfa")
+                        default="../Data/PhonemeDatasets/LibriSpeech/LibriSpeech/test-clean-mfa")
     parser.add_argument("--n_batches", type=int, default=5,
                         help="Number of batches to evaluate over")
     args = parser.parse_args()
