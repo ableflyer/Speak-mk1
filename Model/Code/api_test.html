@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Speak MK1 — API Test</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #111118;
+    --surface2: #1a1a26;
+    --border: #2a2a40;
+    --accent: #6c63ff;
+    --accent2: #00d4aa;
+    --accent3: #ff6b6b;
+    --text: #e8e8f0;
+    --muted: #6b6b8a;
+    --success: #00d4aa;
+    --error: #ff6b6b;
+    --mono: 'JetBrains Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    padding: 2rem;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 20% -20%, rgba(108,99,255,0.12) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 80% 110%, rgba(0,212,170,0.08) 0%, transparent 60%);
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo-chip {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff;
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+
+  header h1 {
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 1.4rem;
+    color: var(--text);
+    letter-spacing: -0.02em;
+  }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    margin-left: auto;
+    box-shadow: 0 0 0 2px rgba(107,107,138,0.2);
+    transition: background 0.3s, box-shadow 0.3s;
+  }
+  .status-dot.live {
+    background: var(--success);
+    box-shadow: 0 0 0 4px rgba(0,212,170,0.2);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .status-dot.error {
+    background: var(--error);
+    box-shadow: 0 0 0 4px rgba(255,107,107,0.2);
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; } 50% { opacity: 0.5; }
+  }
+
+  .status-label {
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* URL bar */
+  .url-bar {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 2rem;
+    align-items: center;
+  }
+  .url-bar label {
+    font-size: 0.7rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+  }
+  .url-bar input {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--accent2);
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .url-bar input:focus { border-color: var(--accent); }
+  .ping-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    padding: 0.6rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .ping-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+
+  /* Grid */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+  }
+
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  /* Panels */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.85rem 1.25rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
+  }
+
+  .endpoint-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 0.2rem 0.5rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+  }
+  .badge-post {
+    background: rgba(108,99,255,0.2);
+    color: var(--accent);
+    border: 1px solid rgba(108,99,255,0.3);
+  }
+  .badge-get {
+    background: rgba(0,212,170,0.15);
+    color: var(--accent2);
+    border: 1px solid rgba(0,212,170,0.3);
+  }
+
+  .panel-title {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text);
+  }
+
+  .panel-body { padding: 1.25rem; }
+
+  /* Form fields */
+  .field { margin-bottom: 1rem; }
+  .field label {
+    display: block;
+    font-size: 0.68rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.4rem;
+  }
+  .field input, .field select, .field textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    padding: 0.6rem 0.85rem;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.2s;
+    resize: vertical;
+  }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--accent);
+  }
+  .field select option { background: var(--surface2); }
+
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+
+  /* Audio upload */
+  .audio-upload {
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+  .audio-upload:hover { border-color: var(--accent); background: rgba(108,99,255,0.05); }
+  .audio-upload input[type="file"] {
+    position: absolute; inset: 0;
+    opacity: 0; cursor: pointer; width: 100%; height: 100%;
+  }
+  .audio-upload-icon { font-size: 1.4rem; margin-bottom: 0.35rem; }
+  .audio-upload-text { font-size: 0.72rem; color: var(--muted); }
+  .audio-upload-text span { color: var(--accent); }
+  .audio-filename { font-size: 0.72rem; color: var(--accent2); margin-top: 0.3rem; }
+
+  /* Submit button */
+  .submit-btn {
+    width: 100%;
+    background: linear-gradient(135deg, var(--accent) 0%, #8b85ff 100%);
+    color: #fff;
+    border: none;
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+    padding: 0.8rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: opacity 0.2s, transform 0.1s;
+    margin-top: 0.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+  .submit-btn:hover { opacity: 0.9; }
+  .submit-btn:active { transform: scale(0.99); }
+  .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .submit-btn.loading::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 50%, transparent 100%);
+    animation: shimmer 1.2s ease-in-out infinite;
+  }
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+
+  /* Response area */
+  .response-area {
+    grid-column: 1 / -1;
+  }
+
+  .response-empty {
+    padding: 2.5rem;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+  .response-empty .empty-icon { font-size: 2rem; margin-bottom: 0.5rem; opacity: 0.5; }
+
+  .response-content { padding: 1.25rem; display: none; }
+  .response-content.visible { display: block; }
+
+  /* Response tabs */
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 1.25rem;
+    background: var(--bg);
+    padding: 0.25rem;
+    border-radius: 6px;
+    width: fit-content;
+  }
+  .tab-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 0.4rem 0.9rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.05em;
+  }
+  .tab-btn.active {
+    background: var(--surface2);
+    color: var(--text);
+  }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* SLP feedback box */
+  .slp-text-box {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent2);
+    border-radius: 6px;
+    padding: 1rem 1.25rem;
+    font-size: 0.88rem;
+    line-height: 1.7;
+    color: var(--text);
+    margin-bottom: 1rem;
+    min-height: 60px;
+  }
+
+  /* Audio player */
+  .audio-player-wrap {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.85rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  .audio-player-wrap audio {
+    flex: 1;
+    height: 32px;
+    filter: invert(0);
+  }
+
+  /* Score cards */
+  .score-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .score-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+    text-align: center;
+  }
+  .score-card .score-label {
+    font-size: 0.65rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 0.5rem;
+  }
+  .score-card .score-value {
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: 1.8rem;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .score-card .score-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 0.5rem;
+    overflow: hidden;
+  }
+  .score-card .score-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+    transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  /* Raw JSON */
+  .json-output {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+    color: #a8b4d8;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  .json-key { color: #7c9fd4; }
+  .json-string { color: #a8d8a8; }
+  .json-number { color: #f0c674; }
+  .json-bool { color: #cc99cd; }
+
+  /* HTTP log */
+  .http-log {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem;
+    font-size: 0.73rem;
+    line-height: 1.8;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .log-entry { margin-bottom: 0.5rem; }
+  .log-method { color: var(--accent); font-weight: 700; }
+  .log-url { color: var(--accent2); }
+  .log-status-2 { color: var(--success); }
+  .log-status-4, .log-status-5 { color: var(--error); }
+  .log-time { color: var(--muted); }
+  .log-sep { color: var(--border); }
+
+  /* Error toast */
+  .error-banner {
+    background: rgba(255,107,107,0.1);
+    border: 1px solid rgba(255,107,107,0.3);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-size: 0.78rem;
+    color: var(--error);
+    margin-bottom: 1rem;
+    display: none;
+  }
+  .error-banner.visible { display: block; }
+
+  /* Health check panel */
+  .health-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-chip">Speak MK1</div>
+  <h1>API Test Console</h1>
+  <span class="status-label" id="statusLabel">not connected</span>
+  <div class="status-dot" id="statusDot"></div>
+</header>
+
+<!-- Base URL -->
+<div class="url-bar">
+  <label>Base URL</label>
+  <input type="text" id="baseUrl" value="http://localhost:5000" placeholder="https://xxxx.ngrok-free.app" />
+  <button class="ping-btn" onclick="pingHealth()">⚡ ping /health</button>
+</div>
+
+<!-- Health panel -->
+<div class="health-panel" id="healthPanel" style="display:none">
+  <div class="panel-header">
+    <span class="endpoint-badge badge-get">GET</span>
+    <span class="panel-title">/health</span>
+  </div>
+  <div class="panel-body">
+    <div class="json-output" id="healthOutput"></div>
+  </div>
+</div>
+
+<div class="grid">
+
+  <!-- /api/ai/feedback -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="endpoint-badge badge-post">POST</span>
+      <span class="panel-title">/api/ai/feedback</span>
+    </div>
+    <div class="panel-body">
+      <div class="field">
+        <label>Transcription (child's utterance)</label>
+        <textarea id="fb_transcription" rows="2" placeholder="I wanna pway wif my fwiends.">I wanna pway wif my fwiends.</textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Target Phrase</label>
+          <input type="text" id="fb_targetPhrase" value="I want to play with my friends." />
+        </div>
+        <div class="field">
+          <label>Target Sound</label>
+          <input type="text" id="fb_targetSound" value="l" placeholder="e.g. r, s, l" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Accuracy (%)</label>
+          <input type="number" id="fb_accuracy" value="62" min="0" max="100" />
+        </div>
+        <div class="field">
+          <label>Child Age</label>
+          <input type="number" id="fb_childAge" value="6" min="2" max="12" />
+        </div>
+      </div>
+      <div class="field">
+        <label>Focus Area</label>
+        <input type="text" id="fb_focusArea" value="Liquid consonants" placeholder="e.g. fricatives, plosives" />
+      </div>
+      <div class="field">
+        <label>Audio File (optional)</label>
+        <div class="audio-upload" id="fbAudioDrop">
+          <input type="file" id="fb_audio" accept="audio/*" onchange="showFilename('fb_audio','fbAudioName')" />
+          <div class="audio-upload-icon">🎙</div>
+          <div class="audio-upload-text">Drop audio or <span>browse</span></div>
+          <div class="audio-filename" id="fbAudioName"></div>
+        </div>
+      </div>
+      <button class="submit-btn" id="fbBtn" onclick="callFeedback()">Send Feedback Request</button>
+    </div>
+  </div>
+
+  <!-- /api/ai/score -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="endpoint-badge badge-post">POST</span>
+      <span class="panel-title">/api/ai/score</span>
+    </div>
+    <div class="panel-body">
+      <div class="field">
+        <label>Transcription</label>
+        <textarea id="sc_transcription" rows="2" placeholder="Child's speech to score.">I wanna pway wif my fwiends.</textarea>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Target Phrase</label>
+          <input type="text" id="sc_targetPhrase" value="I want to play with my friends." />
+        </div>
+        <div class="field">
+          <label>Target Sound</label>
+          <input type="text" id="sc_targetSound" value="l" />
+        </div>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Accuracy (%)</label>
+          <input type="number" id="sc_accuracy" value="62" min="0" max="100" />
+        </div>
+        <div class="field">
+          <label>Child Age</label>
+          <input type="number" id="sc_childAge" value="6" min="2" max="12" />
+        </div>
+      </div>
+      <div class="field">
+        <label>Focus Area</label>
+        <input type="text" id="sc_focusArea" value="Liquid consonants" />
+      </div>
+      <div class="field">
+        <label>Audio File (optional)</label>
+        <div class="audio-upload">
+          <input type="file" id="sc_audio" accept="audio/*" onchange="showFilename('sc_audio','scAudioName')" />
+          <div class="audio-upload-icon">🎙</div>
+          <div class="audio-upload-text">Drop audio or <span>browse</span></div>
+          <div class="audio-filename" id="scAudioName"></div>
+        </div>
+      </div>
+      <button class="submit-btn" id="scBtn" onclick="callScore()">Send Score Request</button>
+    </div>
+  </div>
+
+  <!-- Response area -->
+  <div class="panel response-area">
+    <div class="panel-header">
+      <span class="panel-title">Response</span>
+      <span class="log-time" id="responseTime" style="margin-left:auto;font-size:0.72rem;color:var(--muted)"></span>
+    </div>
+
+    <div class="response-empty" id="responseEmpty">
+      <div class="empty-icon">◎</div>
+      Send a request to see the response here.
+    </div>
+
+    <div class="response-content" id="responseContent">
+      <div class="error-banner" id="errorBanner"></div>
+
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('output')">Output</button>
+        <button class="tab-btn" onclick="switchTab('raw')">Raw JSON</button>
+        <button class="tab-btn" onclick="switchTab('log')">HTTP Log</button>
+      </div>
+
+      <!-- Output tab -->
+      <div class="tab-panel active" id="tab-output">
+
+        <!-- Feedback response -->
+        <div id="fbResult" style="display:none">
+          <div style="font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;">SLP Response</div>
+          <div class="slp-text-box" id="fbText"></div>
+
+          <div style="font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.5rem;">TTS Audio</div>
+          <div class="audio-player-wrap" id="fbAudioWrap" style="display:none">
+            <audio id="fbAudioPlayer" controls></audio>
+          </div>
+
+          <div style="font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.75rem;">Phoneme Scores</div>
+          <div class="score-grid">
+            <div class="score-card">
+              <div class="score-label">Voicing</div>
+              <div class="score-value" id="fbVoicing">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="fbVoicingBar" style="width:0%"></div></div>
+            </div>
+            <div class="score-card">
+              <div class="score-label">Manner</div>
+              <div class="score-value" id="fbManner">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="fbMannerBar" style="width:0%"></div></div>
+            </div>
+            <div class="score-card">
+              <div class="score-label">Place</div>
+              <div class="score-value" id="fbPlace">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="fbPlaceBar" style="width:0%"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Score response -->
+        <div id="scResult" style="display:none">
+          <div style="font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:0.75rem;">Overall Score</div>
+          <div class="score-grid" style="grid-template-columns: 1fr 1fr 1fr 1fr;">
+            <div class="score-card">
+              <div class="score-label">Overall</div>
+              <div class="score-value" id="scOverall">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="scOverallBar" style="width:0%"></div></div>
+            </div>
+            <div class="score-card">
+              <div class="score-label">Fluency</div>
+              <div class="score-value" id="scFluency">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="scFluencyBar" style="width:0%"></div></div>
+            </div>
+            <div class="score-card">
+              <div class="score-label">Accuracy</div>
+              <div class="score-value" id="scAccuracy">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="scAccuracyBar" style="width:0%"></div></div>
+            </div>
+            <div class="score-card">
+              <div class="score-label">Articulation</div>
+              <div class="score-value" id="scArtic">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="scArticBar" style="width:0%"></div></div>
+            </div>
+          </div>
+
+          <div style="font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin:1rem 0 0.75rem;">Phoneme Scores</div>
+          <div class="score-grid">
+            <div class="score-card">
+              <div class="score-label">Voicing</div>
+              <div class="score-value" id="scVoicing">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="scVoicingBar" style="width:0%"></div></div>
+            </div>
+            <div class="score-card">
+              <div class="score-label">Manner</div>
+              <div class="score-value" id="scManner">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="scMannerBar" style="width:0%"></div></div>
+            </div>
+            <div class="score-card">
+              <div class="score-label">Place</div>
+              <div class="score-value" id="scPlace">—</div>
+              <div class="score-bar"><div class="score-bar-fill" id="scPlaceBar" style="width:0%"></div></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Raw JSON tab -->
+      <div class="tab-panel" id="tab-raw">
+        <div class="json-output" id="rawJson"></div>
+      </div>
+
+      <!-- HTTP Log tab -->
+      <div class="tab-panel" id="tab-log">
+        <div class="http-log" id="httpLog">
+          <span style="color:var(--muted);font-size:0.72rem;">No requests yet.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const $ = id => document.getElementById(id);
+
+  function getBase() {
+    return $('baseUrl').value.replace(/\/$/, '');
+  }
+
+  // ── File label ─────────────────────────────────────────────────────────
+  function showFilename(inputId, labelId) {
+    const f = $(inputId).files[0];
+    $(labelId).textContent = f ? f.name : '';
+  }
+
+  // ── Tabs ───────────────────────────────────────────────────────────────
+  function switchTab(name) {
+    document.querySelectorAll('.tab-btn').forEach((b, i) => {
+      b.classList.toggle('active', b.textContent.toLowerCase().replace(' ','') === name || b.onclick.toString().includes(`'${name}'`));
+    });
+    document.querySelectorAll('.tab-panel').forEach(p => {
+      p.classList.toggle('active', p.id === `tab-${name}`);
+    });
+    // fix active state properly
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.remove('active');
+    });
+    const btns = document.querySelectorAll('.tab-btn');
+    const tabMap = { output: 0, raw: 1, log: 2 };
+    if (tabMap[name] !== undefined) btns[tabMap[name]].classList.add('active');
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    $(`tab-${name}`).classList.add('active');
+  }
+
+  // ── HTTP log ───────────────────────────────────────────────────────────
+  const logEntries = [];
+  function addLog(method, url, status, ms) {
+    const statusClass = status >= 500 ? 'log-status-5' : status >= 400 ? 'log-status-4' : 'log-status-2';
+    logEntries.unshift(`<div class="log-entry">
+      <span class="log-method">${method}</span>
+      <span class="log-sep"> │ </span>
+      <span class="log-url">${url}</span>
+      <span class="log-sep"> │ </span>
+      <span class="${statusClass}">${status}</span>
+      <span class="log-sep"> │ </span>
+      <span class="log-time">${ms}ms</span>
+    </div>`);
+    $('httpLog').innerHTML = logEntries.join('');
+  }
+
+  // ── JSON syntax highlight ──────────────────────────────────────────────
+  function highlight(obj) {
+    const str = JSON.stringify(obj, (k, v) => {
+      // Truncate base64 audio for display
+      if (k === 'audio' && typeof v === 'string' && v.length > 80) {
+        return v.substring(0, 60) + `... [${v.length} chars, base64 WAV]`;
+      }
+      return v;
+    }, 2);
+    return str
+      .replace(/(".*?")(\s*:)/g, '<span class="json-key">$1</span>$2')
+      .replace(/:\s*(".*?")/g, ': <span class="json-string">$1</span>')
+      .replace(/:\s*(\d+\.?\d*)/g, ': <span class="json-number">$1</span>')
+      .replace(/:\s*(true|false|null)/g, ': <span class="json-bool">$1</span>');
+  }
+
+  // ── Show response area ─────────────────────────────────────────────────
+  function showResponse() {
+    $('responseEmpty').style.display = 'none';
+    $('responseContent').classList.add('visible');
+  }
+
+  function showError(msg) {
+    showResponse();
+    const b = $('errorBanner');
+    b.textContent = `⚠ ${msg}`;
+    b.classList.add('visible');
+    $('fbResult').style.display = 'none';
+    $('scResult').style.display = 'none';
+  }
+
+  function clearError() {
+    $('errorBanner').classList.remove('visible');
+  }
+
+  function setScore(valueId, barId, val) {
+    $(valueId).textContent = val !== undefined && val !== null ? `${val}` : '—';
+    $(barId).style.width = val !== undefined && val !== null ? `${Math.min(val, 100)}%` : '0%';
+  }
+
+  // ── /health ────────────────────────────────────────────────────────────
+  async function pingHealth() {
+    const dot = $('statusDot');
+    const label = $('statusLabel');
+    dot.className = 'status-dot';
+    label.textContent = 'pinging…';
+    const t0 = Date.now();
+    try {
+      const r = await fetch(`${getBase()}/health`);
+      const data = await r.json();
+      const ms = Date.now() - t0;
+      dot.className = 'status-dot live';
+      label.textContent = `connected · ${ms}ms`;
+      $('healthPanel').style.display = 'block';
+      $('healthOutput').innerHTML = highlight(data);
+      addLog('GET', '/health', r.status, ms);
+    } catch (e) {
+      dot.className = 'status-dot error';
+      label.textContent = 'unreachable';
+      $('healthPanel').style.display = 'none';
+      addLog('GET', '/health', 0, Date.now() - t0);
+    }
+  }
+
+  // ── /api/ai/feedback ───────────────────────────────────────────────────
+  async function callFeedback() {
+    const btn = $('fbBtn');
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.textContent = 'Sending…';
+    clearError();
+
+    const audioFile = $('fb_audio').files[0];
+    let body, headers = {};
+    const t0 = Date.now();
+
+    if (audioFile) {
+      const fd = new FormData();
+      fd.append('transcription', $('fb_transcription').value);
+      fd.append('targetPhrase',  $('fb_targetPhrase').value);
+      fd.append('targetSound',   $('fb_targetSound').value);
+      fd.append('accuracy',      $('fb_accuracy').value);
+      fd.append('childAge',      $('fb_childAge').value);
+      fd.append('focusArea',     $('fb_focusArea').value);
+      fd.append('audio',         audioFile);
+      body = fd;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify({
+        transcription: $('fb_transcription').value,
+        targetPhrase:  $('fb_targetPhrase').value,
+        targetSound:   $('fb_targetSound').value,
+        accuracy:      parseFloat($('fb_accuracy').value),
+        childAge:      parseInt($('fb_childAge').value),
+        focusArea:     $('fb_focusArea').value,
+      });
+    }
+
+    try {
+      const r = await fetch(`${getBase()}/api/ai/feedback`, { method: 'POST', headers, body });
+      const ms = Date.now() - t0;
+      const data = await r.json();
+      addLog('POST', '/api/ai/feedback', r.status, ms);
+      $('responseTime').textContent = `${ms}ms`;
+
+      if (!r.ok || data.error) {
+        showError(data.error || `HTTP ${r.status}`);
+        $('rawJson').innerHTML = highlight(data);
+        showResponse();
+      } else {
+        showResponse();
+        $('scResult').style.display = 'none';
+        $('fbResult').style.display = 'block';
+
+        // Text
+        $('fbText').textContent = data.text || '(empty response)';
+
+        // Audio
+        if (data.audio) {
+          const audioEl = $('fbAudioPlayer');
+          audioEl.src = `data:audio/wav;base64,${data.audio}`;
+          $('fbAudioWrap').style.display = 'flex';
+          audioEl.load();
+        } else {
+          $('fbAudioWrap').style.display = 'none';
+        }
+
+        // Phoneme scores
+        const ps = data.phoneme_scores || {};
+        setScore('fbVoicing', 'fbVoicingBar', ps.voicing);
+        setScore('fbManner',  'fbMannerBar',  ps.manner);
+        setScore('fbPlace',   'fbPlaceBar',   ps.place);
+
+        $('rawJson').innerHTML = highlight(data);
+        switchTab('output');
+      }
+    } catch (e) {
+      const ms = Date.now() - t0;
+      addLog('POST', '/api/ai/feedback', 0, ms);
+      showError(`Network error: ${e.message}. Is the server running at ${getBase()}?`);
+    }
+
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.textContent = 'Send Feedback Request';
+  }
+
+  // ── /api/ai/score ──────────────────────────────────────────────────────
+  async function callScore() {
+    const btn = $('scBtn');
+    btn.disabled = true;
+    btn.classList.add('loading');
+    btn.textContent = 'Sending…';
+    clearError();
+
+    const audioFile = $('sc_audio').files[0];
+    let body, headers = {};
+    const t0 = Date.now();
+
+    if (audioFile) {
+      const fd = new FormData();
+      fd.append('transcription', $('sc_transcription').value);
+      fd.append('targetPhrase',  $('sc_targetPhrase').value);
+      fd.append('targetSound',   $('sc_targetSound').value);
+      fd.append('accuracy',      $('sc_accuracy').value);
+      fd.append('childAge',      $('sc_childAge').value);
+      fd.append('focusArea',     $('sc_focusArea').value);
+      fd.append('audio',         audioFile);
+      body = fd;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify({
+        transcription: $('sc_transcription').value,
+        targetPhrase:  $('sc_targetPhrase').value,
+        targetSound:   $('sc_targetSound').value,
+        accuracy:      parseFloat($('sc_accuracy').value),
+        childAge:      parseInt($('sc_childAge').value),
+        focusArea:     $('sc_focusArea').value,
+      });
+    }
+
+    try {
+      const r = await fetch(`${getBase()}/api/ai/score`, { method: 'POST', headers, body });
+      const ms = Date.now() - t0;
+      const data = await r.json();
+      addLog('POST', '/api/ai/score', r.status, ms);
+      $('responseTime').textContent = `${ms}ms`;
+
+      if (!r.ok || data.error) {
+        showError(data.error || `HTTP ${r.status}`);
+        $('rawJson').innerHTML = highlight(data);
+        showResponse();
+      } else {
+        showResponse();
+        $('fbResult').style.display = 'none';
+        $('scResult').style.display = 'block';
+
+        setScore('scOverall',  'scOverallBar',  data.overall);
+        const det = data.details || {};
+        setScore('scFluency',  'scFluencyBar',  det.fluency);
+        setScore('scAccuracy', 'scAccuracyBar', det.accuracy);
+        setScore('scArtic',    'scArticBar',    det.articulation);
+        const ps = data.phoneme_scores || {};
+        setScore('scVoicing',  'scVoicingBar',  ps.voicing);
+        setScore('scManner',   'scMannerBar',   ps.manner);
+        setScore('scPlace',    'scPlaceBar',    ps.place);
+
+        $('rawJson').innerHTML = highlight(data);
+        switchTab('output');
+      }
+    } catch (e) {
+      const ms = Date.now() - t0;
+      addLog('POST', '/api/ai/score', 0, ms);
+      showError(`Network error: ${e.message}. Is the server running at ${getBase()}?`);
+    }
+
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.textContent = 'Send Score Request';
+  }
+
+  // Auto-ping on load
+  window.addEventListener('load', () => {
+    setTimeout(pingHealth, 300);
+  });
+</script>
+</body>
+</html>
