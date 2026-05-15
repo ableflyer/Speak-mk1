@@ -1,24 +1,3 @@
-"""
-audio_encoder_tester.py
-=======================
-SpeakMK1 — Audio encoder diagnostic tester.
-
-Tests the audio encoder independently of the Q-Former to determine whether
-the problem is in the encoder itself or the Q-Former alignment training.
-
-Checks:
-    1. Output shape and dtype
-    2. Phonological head accuracy (place, manner, voicing, correctness)
-    3. CTC output quality (blank token dominance check)
-    4. Encoder output diversity (not collapsed)
-    5. Q-Former output diversity across different audio inputs
-    6. Audio sensitivity (does output change with different inputs?)
-    7. Gradient flow through encoder
-
-Usage:
-    python audio_encoder_tester.py --checkpoint ../Model_files/audio_encoder_epoch_19.pt
-"""
-
 from __future__ import annotations
 
 import argparse

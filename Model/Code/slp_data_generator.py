@@ -1,19 +1,3 @@
-"""
-SpeakMK1 Stage 3 Synthetic Data Generator
-Generates 10,000 multi-turn SLP dialogue entries via the Anthropic API.
-
-Usage:
-    python generate_slp_data.py --total 10000 --output slp_stage3_train.jsonl
-    python generate_slp_data.py --total 500 --output slp_val.jsonl --start-seed 99999
-
-Design principles:
-    - Fully async with rate-limit-aware concurrency (respects Anthropic tier limits)
-    - Deterministic seed-based sampling ensures reproducibility and no duplicate configs
-    - Validates every entry before writing to disk
-    - Resumes from checkpoint if interrupted
-    - Outputs clean JSONL ready for SpeakMK1 Stage 3 tokenization
-"""
-
 import asyncio
 import json
 import random

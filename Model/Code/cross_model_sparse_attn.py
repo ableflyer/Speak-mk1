@@ -1,31 +1,3 @@
-# cross_model_sparse_attn.py
-#
-# Cross-Model Sparse Attention (decoder side of diagram).
-#
-# What it does:
-#   Text decoder tokens (queries) attend to audio encoder output (keys/values).
-#   Instead of attending to ALL audio frames (expensive, noisy), each text token
-#   selects only the top-k most relevant audio frames via a lightweight relevance
-#   score, then runs attention only over those k frames.
-#
-# Why sparse:
-#   A typical utterance at 10ms frame shift produces 300-500 audio frames.
-#   Full cross-attention from every text token to every audio frame is O(T_text * T_audio).
-#   With top-k selection we reduce this to O(T_text * k) where k << T_audio.
-#
-# Flow:
-#   text_hidden (B, T_text, d)   ← queries  (from decoder layer)
-#   audio_out   (B, T_audio, d)  ← keys & values  (from audio encoder)
-#
-#   1. Score: relevance[b, t, a] = dot(Q[b,t], K[b,a]) / sqrt(d_head)
-#   2. Select: for each text token t, pick top-k audio indices by score
-#   3. Attend: softmax over only those k scores, weighted sum of k values
-#   4. Gated residual: tanh gate (Flamingo-style) controls injection strength
-#
-# The tanh gate initialised to 0 means the layer starts as an identity
-# (audio has no influence at init) and gradually opens during training.
-# This is critical for not destabilising a pretrained LLM backbone.
-
 import math
 from typing import Optional
 
@@ -37,23 +9,6 @@ from UniMamba import RMSNorm
 
 
 class CrossModelSparseAttention(nn.Module):
-    """
-    Cross-Model Sparse Attention.
-
-    Decoder text tokens attend to audio encoder output, but only to their
-    top-k most relevant audio frames (sparse selection).
-
-    Args:
-        d_model:      model hidden dimension (must match both encoder and decoder)
-        nheads:       number of attention heads
-        top_k:        number of audio frames each text token attends to
-        dropout:      attention dropout
-        use_gate:     if True, wrap output with a learned tanh gate (Flamingo-style)
-                      so the layer starts as identity and opens gradually during training.
-                      Strongly recommended when inserting into a pretrained LLM.
-        eps:          RMSNorm epsilon
-    """
-
     def __init__(
         self,
         d_model: int,

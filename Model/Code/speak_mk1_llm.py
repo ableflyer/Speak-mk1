@@ -1,31 +1,3 @@
-"""
-speakmk1_llm_block.py
-=====================
-SpeakMK1 LLM decoder.
-
-Block pattern (x num_blocks, matches diagram):
-
-    UniMamba
-    -> CrossModelSparseAttention   (skipped if audio_out=None)
-    -> UniMambaMoE
-
-Full model:
-    Embedding (128-dim bottleneck -> d_model)
-    -> [DecoderBlock] x num_blocks
-    -> RMSNorm
-    -> LM Head
-
-Notes:
-    - All sub-layers handle their own pre-norm and residual internally.
-    - CrossModelSparseAttention tanh gate is initialised to 0, so audio
-      contributes zero at init. Pass audio_out=None during text-only
-      pretraining and the cross-attn is skipped entirely (no wasted compute).
-    - aux_loss from all LatentMoE routers is accumulated and returned so
-      the training loop can add it to the task loss.
-    - Weight tying between embedding and LM head is not used because the
-      factorised embedding (128-dim bottleneck) means shapes do not match.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -44,28 +16,6 @@ from cross_model_sparse_attn import CrossModelSparseAttention
 # ============================================================================
 
 class SpeakMK1DecoderBlock(nn.Module):
-    """
-    Single decoder block matching the diagram:
-
-        x -> UniMamba -> CrossModelSparseAttention -> UniMambaMoE -> out
-
-    CrossModelSparseAttention is skipped when audio_out=None, which is the
-    case during text-only pretraining (Stages 1 and 2).
-
-    Args:
-        d_model:       hidden dimension
-        d_state:       SSM state size for UniMamba
-        d_conv:        depthwise conv width for UniMamba
-        expand:        expansion ratio for UniMamba
-        nheads_ssm:    heads inside UniMamba
-        nheads_attn:   heads for CrossModelSparseAttention
-        top_k_audio:   audio frames each text token attends to (sparse k)
-        latent_dim:    LatentMoE bottleneck dim (None -> d_model // 4)
-        num_experts:   number of routed experts in LatentMoE
-        top_k_experts: experts activated per token
-        dropout:       dropout throughout
-    """
-
     def __init__(
         self,
         d_model:       int,

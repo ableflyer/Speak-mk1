@@ -1,20 +1,3 @@
-
-"""
-test_audio_encoder.py
-=====================
-Standalone diagnostic script for SpeakMK1 AudioEncoder.
-Tests encoder with real WAV files to verify:
-    1. Feature extraction quality (real vs silence)
-    2. Layer-by-layer activation statistics
-    3. QFormer vs DirectProjection behavior
-    4. Checkpoint loading integrity
-
-Usage:
-    python test_audio_encoder.py --wav /path/to/audio.wav --ckpt /path/to/encoder.pt
-    python test_audio_encoder.py --wav /path/to/audio.wav --ckpt /path/to/encoder.pt --compare-silence
-    python test_audio_encoder.py --librispeech /path/to/LibriSpeech/test-clean --ckpt /path/to/encoder.pt --num-samples 10
-"""
-
 import argparse
 import os
 import glob

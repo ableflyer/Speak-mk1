@@ -1,18 +1,3 @@
-"""
-audio_encoder.py
-================
-SpeakMK1 Audio Encoder — full pipeline as shown in the architecture diagram:
-
-    Log-Mel Spectrogram
-        └─► Linear stem projection
-            └─► Uni-Mamba stack  (×M layers)
-                └─► RMS-ATT  (local-window attention)
-                    └─► [Bi-Mamba MoE  +  CgMLP]  merged
-                        └─► Shared Phonological Layer
-                            ├─► [Training] Voicing / Manner / CTC / Place / Correctness heads
-                            └─► Q-Former Projection  →  LLM tokens
-"""
-
 import math
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple

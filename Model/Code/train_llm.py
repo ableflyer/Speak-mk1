@@ -1,9 +1,3 @@
-"""
-train_speakmk1_llm.py
-=====================
-SpeakMK1 LLM — Training script + CLI chatbot.
-"""
-
 from __future__ import annotations
 
 import argparse

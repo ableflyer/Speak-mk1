@@ -9,25 +9,6 @@ from UniMamba import RMSNorm
 
 
 class LocalWindowAttention(nn.Module):
-    """
-    Local Window Self-Attention.
-
-    Each token at position t attends only to positions [t-window, t+window],
-    giving O(L * window) complexity instead of O(L^2).
-
-    The mask is causal-optional:
-      - causal=False (default for encoder): symmetric window, full [t-w, t+w]
-      - causal=True  (for decoder use):     left-only window, [t-w, t]
-
-    Args:
-        d_model:      model hidden dimension
-        nheads:       number of attention heads  (also accepted as `num_heads`)
-        window:       one-sided window size       (also accepted as `window_size`)
-        dropout:      attention dropout probability
-        causal:       if True, only attend to past positions (left window only)
-        eps:          RMSNorm epsilon
-    """
-
     def __init__(
         self,
         d_model: int,
@@ -70,14 +51,6 @@ class LocalWindowAttention(nn.Module):
 
     # ------------------------------------------------------------------
     def _build_window_mask(self, L: int, device: torch.device) -> torch.Tensor:
-        """
-        Build a boolean mask of shape (L, L) where True = MASKED (blocked).
-
-        For each query position i, only keys j where |i - j| <= window are
-        allowed. Everything outside the window is masked to -inf.
-
-        If causal=True, additionally block j > i (future positions).
-        """
         i = torch.arange(L, device=device).unsqueeze(1)  # (L, 1)
         j = torch.arange(L, device=device).unsqueeze(0)  # (1, L)
 

@@ -1,10 +1,3 @@
-"""
-train_audio_proj.py  (RTX 4060 8GB)
-====================================
-Trains ONLY the audio_proj bridge layer.
-Requires cache from precompute_audio_feats.py (GPT-NeoX token IDs).
-"""
-
 import os
 import time
 import glob

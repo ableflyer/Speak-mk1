@@ -1,16 +1,3 @@
-"""
-Speak MK1 — Flask API
-Exposes:
-  POST /api/ai/feedback  → { text, audio (base64 WAV), phoneme_scores }
-  POST /api/ai/score     → { overall, phoneme_scores, details }
-
-Run locally:
-  python speak_mk1_api.py
-
-Then tunnel with ngrok:
-  ngrok http 5000
-"""
-
 import io
 import base64
 import traceback

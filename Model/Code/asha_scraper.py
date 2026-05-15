@@ -1,12 +1,5 @@
 """
-asha_evidence_scraper.py
-Ethical scraper for ASHA Evidence Maps.
-Guardrails:
-- Reads robots.txt first, stops if disallowed
-- 3-5 second delay between requests (crawl-delay)
-- Identifies itself honestly via User-Agent
-- Saves incrementally (resume-friendly)
-- Rate limits aggressively
+This has not been used
 """
 
 import time

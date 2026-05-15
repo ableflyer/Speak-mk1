@@ -1,9 +1,3 @@
-"""
-scrape_pubmed_slp.py
-Scrapes PubMed Central open-access articles on speech therapy.
-Output: pmc_slp_articles.jsonl  (one article per line)
-"""
-
 import requests
 import xml.etree.ElementTree as ET
 import json

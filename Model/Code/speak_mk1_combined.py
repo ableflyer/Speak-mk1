@@ -1,23 +1,3 @@
-"""
-speakmk1_multimodal.py
-======================
-Combined multimodal architecture for SpeakMK1.
-Wraps AudioEncoder + DirectAudioProjection + SpeakMK1LLM into a single
-nn.Module with a unified forward pass.
-
-Gradient flow:
-    mel → AudioEncoder → audio_proj → CrossModelSparseAttention (in each block)
-                                             ↓
-    token_ids → embedding → SSM blocks → lm_head → CE loss
-
-Training phases (controlled by freeze_backbone):
-    Phase 1 (freeze_backbone=True):
-        Trains: audio_encoder, audio_proj, cross_attn weights only
-        Frozen: LLM embedding, SSM, norm, lm_head
-    Phase 2 (freeze_backbone=False):
-        Trains: everything jointly at a lower lr
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

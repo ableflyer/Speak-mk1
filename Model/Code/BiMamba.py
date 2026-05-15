@@ -11,29 +11,6 @@ from UniMamba import RMSNorm, RoPE, MIMO
 
 
 class BiMamba(nn.Module):
-    """
-    Bidirectional Mamba block (diagram panel d).
-
-    Mirrors UniMamba's internal structure exactly:
-
-    Input → RMSNorm → in_proj → in_mimo → ssm_norm → RoPE → split(x, B, C)
-                                                               → SSM (fwd) ──────────────┐
-                                                    (flipped) → SSM (bwd) → flip back ──┤
-                                                                                  Merge (sum)
-                                                                               → out_mimo
-                                                                               → Multiply (gate)
-                                                                               → out_proj
-                   └→ gate_proj → gate_mimo → SiLU ────────────────────────────────────↑
-
-    Args:
-        d_model:   hidden dimension
-        d_state:   SSM state size (also accepted as `dstate` for back-compat)
-        d_conv:    accepted for API compatibility with AudioEncoderConfig; not used internally
-        expand:    accepted for API compatibility; inner dim is fixed to nheads*headdim
-        nheads:    number of SSM heads (default: d_model // 64, i.e. headdim=64)
-        headdim:   per-head dimension; inferred as d_model // nheads if not given
-    """
-
     def __init__(
         self,
         d_model: int,

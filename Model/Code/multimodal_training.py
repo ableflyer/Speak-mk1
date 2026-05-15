@@ -1,4 +1,5 @@
 """
+This is not used, instead we trained a projection layer at train_proj.py
 train_multimodal.py
 ===================
 Trains SpeakMK1Multimodal end-to-end from mel spectrograms.

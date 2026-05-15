@@ -1,21 +1,6 @@
 """
-segment_oral.py — Speak MK1 Oral Region Segmentation
-=====================================================
-Segments teeth and tongue from video frames using MediaPipe FaceMesh for
-landmark-anchored ROI extraction and HSV colour-space segmentation.
-
-Output per frame
-----------------
-  masks : dict with keys 'teeth' and 'tongue', each a uint8 binary mask (255=region)
-  features : dict with geometric features derived from the masks
-
-Usage
------
-  python segment_oral.py --input path/to/video.mp4 --output output_dir/
-  python segment_oral.py --input path/to/video.mp4 --output output_dir/ --visualise
-  python segment_oral.py --webcam --visualise           # live webcam mode
+This has not been used
 """
-
 import json
 import os
 import sys

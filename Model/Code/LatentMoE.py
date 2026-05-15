@@ -10,28 +10,6 @@ from UniMamba import RMSNorm
 
 
 class LatentMoE(nn.Module):
-    """
-    LatentMoE flow:
-        x (d)
-        ├─ router logits = x @ W_router.T        (full d — gating quality preserved)
-        │    → top-k gates
-        ├─ z = W_down(x)                          (d → ℓ, shared, before dispatch)
-        │    → top-k experts in latent space      (ℓ → d_ff → ℓ)
-        │    → weighted combine
-        │    → W_up(z_out)                        (ℓ → d, shared, after combine)
-        └─ shared_expert(x)                       (always active, full d)
-        out = y_routed + y_shared
-
-    Args:
-        d_model:        hidden dimension
-        latent_dim:     bottleneck dimension for routed experts.
-                        Defaults to d_model // 4 if not given.
-        num_experts:    number of routed experts
-        top_k:          experts activated per token
-        base_block:     optional nn.Module to wrap (ignored in routing logic;
-                        kept for API compatibility with BiMambaMoECgMLPBlock)
-    """
-
     def __init__(
         self,
         d_model: int,

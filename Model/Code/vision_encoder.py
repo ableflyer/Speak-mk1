@@ -1,5 +1,6 @@
 """
 visual_encoder.py
+this is not used
 =================
 SpeakMK1 — Visual encoder for mouth tracking features.
 

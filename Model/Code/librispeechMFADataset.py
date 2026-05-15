@@ -1,20 +1,3 @@
-"""
-librispeech_mfa_dataset.py
-==========================
-PyTorch Dataset for LibriSpeech + MFA-aligned TextGrid files.
-
-Replaces TIMITDataset for training the AudioEncoder with phonological heads.
-
-Directory structure expected:
-    librispeech_root/
-        103/1240/103-1240-0000.wav
-        103/1240/103-1240-0000.txt
-        ...
-    mfa_output_root/
-        103/1240/103-1240-0000.TextGrid
-        ...
-"""
-
 import os
 import glob
 from typing import Dict, List, Optional, Tuple
@@ -240,3 +223,13 @@ def collate_fn(
         for k in batch[0][1].keys()
     }
     return mels, labels
+
+# should return something like:
+# Directory structure expected:
+#     librispeech_root/
+#         103/1240/103-1240-0000.wav
+#         103/1240/103-1240-0000.txt
+#         ...
+#     mfa_output_root/
+#         103/1240/103-1240-0000.TextGrid
+#         ...

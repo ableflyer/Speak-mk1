@@ -1,5 +1,6 @@
 """
 train_visual_encoder.py
+unfortunately it's not used
 =======================
 SpeakMK1 — Visual encoder training.
 

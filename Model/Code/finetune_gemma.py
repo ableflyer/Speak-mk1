@@ -1,14 +1,5 @@
 """
-finetune_gemma_slp.py
-=====================
-QLoRA fine-tuning of Gemma 3 4B on SLP clinical dialogue data.
-Reuses your existing tokenize_slp_jsonl pipeline and SLPDataset.
-
-Usage:
-    python finetune_gemma_slp.py tokenize --path ./data/slp_dialogues.jsonl
-    python finetune_gemma_slp.py train
-    python finetune_gemma_slp.py train --resume ./checkpoints_gemma/ckpt_best.pt
-    python finetune_gemma_slp.py chat   --checkpoint ./checkpoints_gemma/ckpt_best
+This has not been used
 """
 
 from __future__ import annotations

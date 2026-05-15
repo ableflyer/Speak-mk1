@@ -1,4 +1,3 @@
-# qformer_tester.py
 import torch
 import torch.nn.functional as F
 from audio_encoder import AudioEncoder
