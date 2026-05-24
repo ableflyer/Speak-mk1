@@ -1,0 +1,127 @@
+ENCODER EVALUATION RESULTS
+============================================================
+
+RANKING (best to worst)
+------------------------------------------------------------
+# 1  Epoch 13  |  Overall Acc: 82.1%  |  Loss: 0.6234
+            voicing: 96.4%
+             manner: 93.0%
+              place: 40.4%
+        correctness: 98.7%
+
+# 2  Epoch 09  |  Overall Acc: 82.1%  |  Loss: 0.5680
+            voicing: 96.4%
+             manner: 93.0%
+              place: 40.4%
+        correctness: 98.7%
+
+# 3  Epoch 15  |  Overall Acc: 82.1%  |  Loss: 0.6490
+            voicing: 96.5%
+             manner: 93.0%
+              place: 40.3%
+        correctness: 98.7%
+
+# 4  Epoch 16  |  Overall Acc: 82.1%  |  Loss: 0.6695
+            voicing: 96.5%
+             manner: 93.0%
+              place: 40.3%
+        correctness: 98.7%
+
+# 5  Epoch 10  |  Overall Acc: 82.1%  |  Loss: 0.5812
+            voicing: 96.4%
+             manner: 93.0%
+              place: 40.3%
+        correctness: 98.7%
+
+# 6  Epoch 18  |  Overall Acc: 82.1%  |  Loss: 0.7222
+            voicing: 96.4%
+             manner: 93.0%
+              place: 40.2%
+        correctness: 98.7%
+
+# 7  Epoch 12  |  Overall Acc: 82.1%  |  Loss: 0.5997
+            voicing: 96.4%
+             manner: 92.9%
+              place: 40.3%
+        correctness: 98.6%
+
+# 8  Epoch 14  |  Overall Acc: 82.0%  |  Loss: 0.6374
+            voicing: 96.4%
+             manner: 93.0%
+              place: 40.2%
+        correctness: 98.6%
+
+# 9  Epoch 19  |  Overall Acc: 82.0%  |  Loss: 0.7405
+            voicing: 96.4%
+             manner: 92.9%
+              place: 40.2%
+        correctness: 98.6%
+
+#10  Epoch 11  |  Overall Acc: 82.0%  |  Loss: 0.6062
+            voicing: 96.4%
+             manner: 92.9%
+              place: 40.2%
+        correctness: 98.7%
+
+#11  Epoch 17  |  Overall Acc: 82.0%  |  Loss: 0.6930
+            voicing: 96.4%
+             manner: 92.9%
+              place: 40.2%
+        correctness: 98.6%
+
+#12  Epoch 08  |  Overall Acc: 82.0%  |  Loss: 0.5640
+            voicing: 96.3%
+             manner: 92.8%
+              place: 40.2%
+        correctness: 98.7%
+
+#13  Epoch 07  |  Overall Acc: 81.9%  |  Loss: 0.5630
+            voicing: 96.3%
+             manner: 92.8%
+              place: 39.9%
+        correctness: 98.7%
+
+#14  Epoch 06  |  Overall Acc: 81.8%  |  Loss: 0.5764
+            voicing: 96.2%
+             manner: 92.5%
+              place: 39.9%
+        correctness: 98.6%
+
+#15  Epoch 05  |  Overall Acc: 81.7%  |  Loss: 0.5804
+            voicing: 96.1%
+             manner: 92.4%
+              place: 39.9%
+        correctness: 98.6%
+
+#16  Epoch 04  |  Overall Acc: 81.6%  |  Loss: 0.5943
+            voicing: 96.0%
+             manner: 92.2%
+              place: 39.5%
+        correctness: 98.7%
+
+#17  Epoch 03  |  Overall Acc: 81.3%  |  Loss: 0.6306
+            voicing: 95.8%
+             manner: 91.6%
+              place: 39.4%
+        correctness: 98.6%
+
+#18  Epoch 02  |  Overall Acc: 80.7%  |  Loss: 0.6845
+            voicing: 95.3%
+             manner: 91.0%
+              place: 38.1%
+        correctness: 98.5%
+
+#19  Epoch 01  |  Overall Acc: 80.2%  |  Loss: 0.7510
+            voicing: 95.1%
+             manner: 89.9%
+              place: 37.2%
+        correctness: 98.4%
+
+#20  Epoch 00  |  Overall Acc: 78.5%  |  Loss: 0.9577
+            voicing: 94.0%
+             manner: 87.0%
+              place: 34.8%
+        correctness: 98.3%
+
+
+BEST CHECKPOINT: audio_encoder_epoch_13.pt
