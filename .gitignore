@@ -1,4 +1,4 @@
-venv/
+.venv/
 .vscode/
 Model/Code/audioencodergpu.py
 Model/Code/__pycache__
@@ -9,3 +9,6 @@ migrate_speak.sh/
 Miniconda3-latest-Linux-x86_64.sh/
 Model/Code/timit_dataset.py
 Model/Code/timit_maps.py
+.env
+backend/node_modules/
+frontend/node_modules/
