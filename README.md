@@ -54,9 +54,9 @@ pip install -r requirements.txt
 The specialized weights for our SLP-adapted reasoning engines are hosted on Hugging Face.
 👉 [Download the Speak-mk1 Models on Hugging Face](https://huggingface.co/SakhrML/SpeakMK1_early)
 ## 📝 Citation & Research Paper
-This software implementation accompanies our upcoming research paper on multi-modal speech-language pathology models. If you use this code or model in your academic work, please cite it:
+This software implementation accompanies our upcoming research paper on speak-mk1. If you use this code or model in your academic work, please cite it:
 ```bibtex
 bibtex coming soon
 ```
 ## 📄 License
-The code in this repository is licensed under the **MIT License**—allowing free academic and commercial reuse, modification, and distribution, provided attribution is maintained. See the LICENSE file for details.
+The code in this repository is licensed under the **MIT License**; allowing free academic and commercial reuse, modification, and distribution, provided attribution is maintained. See the LICENSE file for details.
