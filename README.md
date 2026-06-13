@@ -56,7 +56,33 @@ The specialized weights for our SLP-adapted reasoning engines are hosted on Hugg
 ## 📝 Citation & Research Paper
 This software implementation accompanies our upcoming research paper on speak-mk1. If you use this code or model in your academic work, please cite it:
 ```bibtex
-bibtex coming soon
+@INPROCEEDINGS{Alra2606:Speak,
+AUTHOR="Ebraheem Alrawi and Ali Ihsan and Ved P Mishra",
+TITLE="Speak {MK1:} A Multimodal {Mamba-Attention} Architecture for Articulatory
+Assessment and Speech Therapy",
+BOOKTITLE="2026 Student Multidisciplinary Innovation and Research Conference (SMIRC)
+(SMIRC'2026)",
+ADDRESS="Dubai, United Arab Emirates",
+DAYS=12,
+MONTH=jun,
+YEAR=2026,
+KEYWORDS="Speech therapy; Mamba; multimodal AI; articulatory assessment",
+ABSTRACT={This paper presents Speak MK1, a multimodal {"}half-cascade{"} architecture
+for automated speech-language
+pathology assessment. Operating under an 8GB VRAM constraint, the system
+integrates a custom BiMamba-based
+audio encoder with a 74.2M parameter Mamba-attention hybrid language model.
+A five-stage training curriculum
+achieves deep convergence (loss ≈1.45) with 96-99\% voicing and 93-96\%
+manner accuracy, while identifying a 40-46\%
+place-of-articulation ceiling that validates the theoretical need for
+visual articulatory data. Novel cross-attention gate collapse
+dynamics are characterized during text-only fine-tuning, and an
+inference-time recovery strategy is validated. The system
+provides real-time phonological feedback without ASR transcription,
+preserving sub-phonemic detail for pediatric
+speech therapy applications.}
+}
 ```
 ## 📄 License
 The code in this repository is licensed under the **MIT License**; allowing free academic and commercial reuse, modification, and distribution, provided attribution is maintained. See the LICENSE file for details.
