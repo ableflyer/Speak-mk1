@@ -96,26 +96,63 @@ def load_models():
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
+# def audio_bytes_to_mel(audio_bytes: bytes) -> torch.Tensor:
+#     """Decode uploaded audio bytes → mel tensor (1, T, 80) on DEVICE."""
+#     buf = io.BytesIO(audio_bytes)
+#     try:
+#         audio_np, sr = sf.read(buf, dtype="float32")
+#     except Exception as e:
+#         print(f"Error reading audio file: {e}")
+#         buf.seek(0)
+#         audio_np, sr = librosa.load(buf, sr=None, mono=False)
+#     if audio_np.ndim > 1:
+#         audio_np = audio_np.mean(axis=0 if audio_np.shape[0] < audio_np.shape[1] else 1)
+#     if sr != SAMPLE_RATE:
+#         audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=SAMPLE_RATE)
+
+#     mel_np = librosa.feature.melspectrogram(
+#         y=audio_np,
+#         sr=SAMPLE_RATE,
+#         n_fft=400,
+#         hop_length=160,
+#         n_mels=80,
+#         fmin=0.0,
+#         fmax=8000.0,
+#     )
+#     mel_np = librosa.power_to_db(mel_np, ref=np.max)
+#     mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)  # (1, T, 80)
+#     return mel
+import tempfile, os
+
 def audio_bytes_to_mel(audio_bytes: bytes) -> torch.Tensor:
-    """Decode uploaded audio bytes → mel tensor (1, T, 80) on DEVICE."""
     buf = io.BytesIO(audio_bytes)
-    audio_np, sr = sf.read(buf, dtype="float32")
+    try:
+        audio_np, sr = sf.read(buf, dtype="float32")
+    except Exception:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+                print(os.path.exists(tmp_path), os.path.getsize(tmp_path), file=sys.stderr)
+            print(f"temp file size: {os.path.getsize(tmp_path)} bytes", file=sys.stderr)
+            audio_np, sr = librosa.load(tmp_path, sr=None, mono=True)
+        finally:
+            os.remove(tmp_path)
+
     if audio_np.ndim > 1:
-        audio_np = audio_np.mean(axis=1)   # stereo → mono
+        audio_np = audio_np.mean(axis=0)
     if sr != SAMPLE_RATE:
         audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=SAMPLE_RATE)
 
     mel_np = librosa.feature.melspectrogram(
-        y=audio_np,
-        sr=SAMPLE_RATE,
-        n_fft=400,
-        hop_length=160,
-        n_mels=80,
-        fmin=0.0,
-        fmax=8000.0,
+        y=audio_np, sr=SAMPLE_RATE, n_fft=400, hop_length=160,
+        n_mels=80, fmin=0.0, fmax=8000.0,
     )
     mel_np = librosa.power_to_db(mel_np, ref=np.max)
-    mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)  # (1, T, 80)
+    mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)
     return mel
 
 
@@ -233,8 +270,8 @@ def get_pre_phonological_features(mel):
 
 def phoneme_scores_from_features(mel: torch.Tensor) -> dict:
     with torch.no_grad():
-        pre_phon, _ = encoder.phonological(mel)
-        phon_out = pre_phon
+        pre_phon = get_pre_phonological_features(mel)   # (B, T, 512) — separate branch
+        phon_out, _ = encoder.phonological(pre_phon)
 
         scores = {}
         for name, head in encoder.phonological.heads.items():
@@ -298,7 +335,10 @@ def feedback():
         # ── Audio encode (if audio provided, else use silent placeholder) ─
         with torch.no_grad():
             if audio_file is not None:
-                mel = audio_bytes_to_mel(audio_file.read())
+                audio_file.seek(0)
+                raw = audio_file.read()
+                print(f"read {len(raw)} bytes from upload", file=sys.stderr)
+                mel = audio_bytes_to_mel(raw)
             else:
                 # No audio uploaded — create a minimal silent mel so the
                 # LLM still gets a valid (though uninformative) audio token
@@ -310,11 +350,13 @@ def feedback():
                 mel_np = librosa.power_to_db(mel_np, ref=np.max)
                 mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
+            # raw = audio_file.read()
+            # print(f"read {len(raw)} bytes from upload", file=sys.stderr)
             # mel = audio_bytes_to_mel(audio_file.read())
             audio_feats = encoder.encode_features(mel)   # (1, T, 512)
             audio_out   = proj(audio_feats)               # (1, T, 512)
 
-            phoneme_scores = phoneme_scores_from_features(audio_out)
+            phoneme_scores = phoneme_scores_from_features(mel)
 
             # ── Build prompt & generate ────────────────────────────────────
             prompt    = build_prompt(transcription, target_phrase, target_sound,
@@ -385,7 +427,7 @@ def score():
                 mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
             audio_feats    = encoder.encode_features(mel)
-            phoneme_scores = phoneme_scores_from_features(audio_feats)
+            phoneme_scores = phoneme_scores_from_features(mel)
 
         # Combine encoder's phoneme confidence with the reported accuracy
         encoder_overall = (
