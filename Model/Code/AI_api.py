@@ -155,16 +155,47 @@ def audio_bytes_to_mel(audio_bytes: bytes) -> torch.Tensor:
     mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)
     return mel
 
+def apply_repetition_penalty(logits, generated_ids, penalty=1.3):
+    for token_id in set(generated_ids[0].tolist()):
+        if logits[token_id] > 0:
+            logits[token_id] /= penalty
+        else:
+            logits[token_id] *= penalty
+    return logits
+
+def get_banned_ngram_tokens(generated_ids, ngram_size=3):
+    generated = generated_ids[0].tolist()
+    if len(generated) < ngram_size:
+        return set()
+    ngrams = {}
+    for i in range(len(generated) - ngram_size + 1):
+        prefix = tuple(generated[i:i+ngram_size-1])
+        next_tok = generated[i+ngram_size-1]
+        ngrams.setdefault(prefix, set()).add(next_tok)
+    current_prefix = tuple(generated[-(ngram_size-1):])
+    return ngrams.get(current_prefix, set())
+
 
 def generate_text(input_ids: torch.Tensor, audio_out: torch.Tensor,
                   max_new_tokens: int = 150,
                   temperature: float = 0.7,
-                  top_p: float = 0.9) -> str:
+                  top_p: float = 0.9,
+                  repetition_penalty=1.2, 
+                  no_repeat_ngram_size=3) -> str:
     generated = input_ids.clone()
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits, _, _ = llm(input_ids=generated, audio_out=audio_out, audio_padding_mask=None)
             next_logits = logits[0, -1] / temperature
+            
+            next_logits = apply_repetition_penalty(next_logits, generated, repetition_penalty)
+
+            # 2. No-repeat-ngram — hard ban
+            banned = get_banned_ngram_tokens(generated, no_repeat_ngram_size)
+            for tok in banned:
+                next_logits[tok] = -float("inf")
+
+            next_logits = next_logits / temperature
 
             sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
             cumprobs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
