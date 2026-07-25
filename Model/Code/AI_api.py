@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from transformers import AutoTokenizer
 import sys
+import re
 
 # ── Model imports (same as your inference script) ──────────────────────────
 from audio_encoder import AudioEncoder, AudioEncoderConfig
@@ -23,7 +24,7 @@ SAMPLE_RATE = 16000
 
 ENCODER_PATH  = "../Model_files/Audio_encoder_v1.1/audio_encoder_epoch_5.pt"
 PROJ_PATH     = "../Model_files/audio_proj_training/audio_proj_best.pt"
-LLM_PATH      = "../Model_files/checkpoints_v2.3.1/stage5_audio/ckpt_final.pt"
+LLM_PATH      = "../Model_files/checkpoints_v2.3.2/stage4/ckpt_final.pt"
 KOKORO_MODEL  = "../Model_files/kokoro-onnx-models/kokoro-v1.0.onnx"
 KOKORO_VOICES = "../Model_files/kokoro-onnx-models/voices-v1.0.bin"
 
@@ -37,6 +38,28 @@ tokenizer = None
 app = Flask(__name__)
 CORS(app)  # Ali's frontend needs this
 
+# ── Regex for saftey and reducing garbage ────────────────────────────────────
+
+UNSAFE_PATTERNS = [
+    r"\bfeel my\b",
+    r"\byour hand\b",
+    r"\bpretend you are\b.{0,15}\blittle\b",
+    r"\btouch\b",
+    r"\bsecret\b",
+    r"\bdon'?t tell\b",
+]
+
+# Structural garbage that indicates severe incoherence (separate from content safety,
+# but should also block release since it's undiagnosable output).
+GARBAGE_PATTERNS = [
+    r"([A-Za-z])\1{3,}",       # e.g. "sssssss"
+    r"\[.*?\]",                 # stray brackets like "S-[pauses,"
+    r"(\b\w+\b)(?:\s+\1\b){2,}",# same word repeated 3+ times
+]
+
+FALLBACK_RESPONSE = (
+    "Great try! Let's practice that sound one more time together."
+)
 
 # ── Model loader ───────────────────────────────────────────────────────────
 
@@ -79,7 +102,7 @@ def load_models():
     with torch.no_grad():
         for block in llm.blocks:
             if hasattr(block.cross_attn, "gate"):
-                block.cross_attn.gate.data.fill_(0.3)
+                block.cross_attn.gate.data.fill_(0.0)
     llm.eval()
 
     print("Loading Kokoro TTS...")
@@ -175,10 +198,34 @@ def get_banned_ngram_tokens(generated_ids, ngram_size=3):
     current_prefix = tuple(generated[-(ngram_size-1):])
     return ngrams.get(current_prefix, set())
 
+def extract_slp_response(full_output: str) -> str:
+    """Isolate the SLP turn and strip any leaked <|think|> continuation."""
+    _, _, slp_response = full_output.partition("<|slp|>")
+    slp_response = re.split(r"<\|think\|>", slp_response)[0]
+    slp_response = slp_response.replace("<|endturn|>", "").strip()
+    return slp_response
+
+def is_safe_output(text: str) -> bool:
+    lowered = text.lower()
+    for pat in UNSAFE_PATTERNS:
+        if re.search(pat, lowered):
+            return False
+    for pat in GARBAGE_PATTERNS:
+        if re.search(pat, lowered):
+            return False
+    return True
+
+def generate_safe_text(input_ids, audio_out, max_attempts=3, **gen_kwargs):
+    for attempt in range(max_attempts):
+        full_output = generate_text(input_ids, audio_out, **gen_kwargs)
+        slp_response = extract_slp_response(full_output)   # <-- was the two-line partition/replace before
+        if is_safe_output(slp_response):
+            return slp_response, full_output, True
+    return FALLBACK_RESPONSE, full_output, False
 
 def generate_text(input_ids: torch.Tensor, audio_out: torch.Tensor,
                   max_new_tokens: int = 150,
-                  temperature: float = 0.7,
+                  temperature: float = 0.4,
                   top_p: float = 0.9,
                   repetition_penalty=1.2, 
                   no_repeat_ngram_size=3) -> str:
@@ -223,8 +270,10 @@ def text_to_audio_b64(text: str) -> str:
 def build_prompt(transcription: str, target_phrase: str, target_sound: str,
                  accuracy: float, child_age: int, focus_area: str) -> str:
     system = (
-        "You are a warm, expert AI speech-language pathologist helping a child with "
-        "articulation errors. Analyze the error and provide encouraging corrective feedback."
+        "You are a professional pediatric speech-language pathology assistant. "
+        "Give brief, clinical, encouraging feedback about the child's pronunciation. "
+        "Do not reference physical touch, body parts other than mouth/tongue placement in a clinical/anatomical way, "
+        "and do not use secretive or personal language. Keep responses under 3 sentences."
     )
     context_parts = []
     if target_phrase:
@@ -370,22 +419,25 @@ def feedback():
                 raw = audio_file.read()
                 print(f"read {len(raw)} bytes from upload", file=sys.stderr)
                 mel = audio_bytes_to_mel(raw)
+                audio_feats = encoder.encode_features(mel)
+                audio_out = proj(audio_feats)
             else:
                 # No audio uploaded — create a minimal silent mel so the
                 # LLM still gets a valid (though uninformative) audio token
-                silent = np.zeros(SAMPLE_RATE * 1, dtype=np.float32)
-                mel_np = librosa.feature.melspectrogram(
-                    y=silent, sr=SAMPLE_RATE,
-                    n_fft=400, hop_length=160, n_mels=80,
-                )
-                mel_np = librosa.power_to_db(mel_np, ref=np.max)
-                mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                # silent = np.zeros(SAMPLE_RATE * 1, dtype=np.float32)
+                # mel_np = librosa.feature.melspectrogram(
+                #     y=silent, sr=SAMPLE_RATE,
+                #     n_fft=400, hop_length=160, n_mels=80,
+                # )
+                # mel_np = librosa.power_to_db(mel_np, ref=np.max)
+                # mel = torch.tensor(mel_np.T, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                audio_out = None
 
-            # raw = audio_file.read()
-            # print(f"read {len(raw)} bytes from upload", file=sys.stderr)
-            # mel = audio_bytes_to_mel(audio_file.read())
-            audio_feats = encoder.encode_features(mel)   # (1, T, 512)
-            audio_out   = proj(audio_feats)               # (1, T, 512)
+                # raw = audio_file.read()
+                # print(f"read {len(raw)} bytes from upload", file=sys.stderr)
+                # mel = audio_bytes_to_mel(audio_file.read())
+                # audio_feats = encoder.encode_features(mel)   # (1, T, 512)
+                # audio_out   = proj(audio_feats)               # (1, T, 512)
 
             phoneme_scores = phoneme_scores_from_features(mel)
 
@@ -393,11 +445,8 @@ def feedback():
             prompt    = build_prompt(transcription, target_phrase, target_sound,
                                      accuracy, child_age, focus_area)
             input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(DEVICE)
-            full_output = generate_text(input_ids, audio_out)
-
-        # Extract only the SLP turn
-        _, _, slp_response = full_output.partition("<|slp|>")
-        slp_response = slp_response.replace("<|endturn|>", "").strip()
+            slp_response, full_output, passed_filter = generate_safe_text(input_ids, audio_out)
+            print(full_output)
 
         # ── TTS ───────────────────────────────────────────────────────────
         audio_b64 = text_to_audio_b64(slp_response) if slp_response else ""

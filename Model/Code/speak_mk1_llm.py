@@ -107,7 +107,7 @@ class SpeakMK1DecoderBlock(nn.Module):
 @dataclass
 class SpeakMK1LLMConfig:
     # Vocabulary
-    vocab_size:    int   = 50277       # GPT-NeoX tokenizer
+    vocab_size:    int   = 50283       # GPT-NeoX tokenizer
 
     # Model dimensions
     d_model:       int   = 512
@@ -125,7 +125,7 @@ class SpeakMK1LLMConfig:
 
     # MoE
     latent_dim:    Optional[int] = None   # None -> d_model // 4 inside LatentMoE
-    num_experts:   int   = 8
+    num_experts:   int   = 4
     top_k_experts: int   = 2
 
     # Regularisation
