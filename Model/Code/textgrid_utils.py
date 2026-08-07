@@ -15,12 +15,14 @@ USAGE (as a library):
     for start, end, label in phone_tier["intervals"]:
         print(start, end, label)
 
-USAGE (as a script, to inspect a file quickly):
+USAGE (as a script, to inspect a file or entire directory):
     python textgrid_utils.py path/to/file.TextGrid
+    python textgrid_utils.py path/to/directory/
 """
 
 import re
 import sys
+from pathlib import Path
 
 
 def _parse_long_format(text: str) -> dict:
@@ -179,6 +181,23 @@ def get_tier(tg: dict, name_substring: str):
     return None
 
 
+def get_unique_labels(tier: dict, include_empty: bool = False) -> list:
+    """Extract all unique words/labels from a given tier preserving order of appearance."""
+    if not tier or "intervals" not in tier:
+        return []
+
+    seen = set()
+    unique = []
+    for _, _, label in tier["intervals"]:
+        clean_label = label.strip()
+        if not include_empty and not clean_label:
+            continue
+        if clean_label not in seen:
+            seen.add(clean_label)
+            unique.append(clean_label)
+    return unique
+
+
 def frame_labels_from_intervals(intervals, num_frames: int, frame_hop_sec: float, default_label=""):
     """
     Convert a list of (xmin, xmax, label) intervals into a per-frame label array,
@@ -195,17 +214,84 @@ def frame_labels_from_intervals(intervals, num_frames: int, frame_hop_sec: float
     return labels
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("usage: python textgrid_utils.py path/to/file.TextGrid")
-        sys.exit(1)
+def inspect_single_file(file_path: Path):
+    """Inspect and print information for a single TextGrid file."""
+    print(f"\n========================================")
+    print(f"FILE: {file_path.name}")
+    print(f"========================================")
 
-    tg = parse_textgrid(sys.argv[1])
+    try:
+        tg = parse_textgrid(str(file_path))
+    except Exception as e:
+        print(f"Error parsing file: {e}")
+        return
+
     print(f"xmin={tg['xmin']} xmax={tg['xmax']}")
+
     for tier in tg["tiers"]:
         kind = "point" if tier["is_point_tier"] else "interval"
-        print(f"\nTier: '{tier['name']}' ({kind}, {len(tier['intervals'])} entries)")
-        for xmin, xmax, label in tier["intervals"][:10]:
-            print(f"  [{xmin:.3f} - {xmax:.3f}]  '{label}'")
-        if len(tier["intervals"]) > 10:
-            print(f"  ... ({len(tier['intervals']) - 10} more)")
+        unique_words = get_unique_labels(tier, include_empty=False)
+
+        print(f"\n  Tier: '{tier['name']}' ({kind}, {len(tier['intervals'])} entries)")
+        print(f"  Unique words/labels ({len(unique_words)}): {', '.join(unique_words) if unique_words else 'None'}")
+        
+        print("\n  Sample entries:")
+        for xmin, xmax, label in tier["intervals"][:5]:
+            print(f"    [{xmin:.3f} - {xmax:.3f}]  '{label}'")
+        if len(tier["intervals"]) > 5:
+            print(f"    ... ({len(tier['intervals']) - 5} more)")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("usage: python textgrid_utils.py path/to/file_or_directory")
+        sys.exit(1)
+
+    target_path = Path(sys.argv[1])
+
+    if target_path.is_file():
+        inspect_single_file(target_path)
+
+    elif target_path.is_dir():
+        # Find all .TextGrid (and .lab if applicable) files recursively
+        # Matching both uppercase and lowercase extensions
+        files = list(target_path.rglob("*.TextGrid")) + list(target_path.rglob("*.textgrid"))
+        
+        # If your dataset uses .lab extensions for Praat files, uncomment the line below:
+        # files.extend(list(target_path.rglob("*.lab")))
+
+        if not files:
+            print(f"No TextGrid files found in directory: {target_path}")
+            sys.exit(0)
+
+        print(f"Found {len(files)} TextGrid file(s) in '{target_path}'. Processing...\n")
+
+        global_labels_by_tier = {}
+
+        for filepath in sorted(files):
+            inspect_single_file(filepath)
+            
+            # Collect global dataset statistics
+            try:
+                tg = parse_textgrid(str(filepath))
+                for tier in tg["tiers"]:
+                    tier_name = tier["name"]
+                    if tier_name not in global_labels_by_tier:
+                        global_labels_by_tier[tier_name] = set()
+                    
+                    for label in get_unique_labels(tier, include_empty=False):
+                        global_labels_by_tier[tier_name].add(label)
+            except Exception:
+                continue
+
+        # Print Dataset Summary across all files
+        print(f"\n========================================")
+        print(f"DATASET SUMMARY ({len(files)} files)")
+        print(f"========================================")
+        for tier_name, labels in global_labels_by_tier.items():
+            print(f"Tier '{tier_name}' total unique labels across dataset ({len(labels)}):")
+            print(f"  {', '.join(sorted(labels)) if labels else 'None'}\n")
+
+    else:
+        print(f"Error: Path '{target_path}' does not exist.")
+        sys.exit(1)

@@ -7,7 +7,7 @@ audio features so the model learns to be stable with audio in the loop.
 Gates are forced open and allowed to train.
 
 Run:
-    python train_stage5_audio.py --resume ../Model_files/checkpoints_v2.3.1/stage4/ckpt_final.pt
+    python train_stage5_audio.py --resume ../Model_files/checkpoints_v2.3.2/stage4/ckpt_final.pt
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ import LatentMoE
 # CONFIG
 # ════════════════════════════════════════════════════════════════════════════
 
-CKPT_DIR      = Path("../Model_files/checkpoints_v2.3.1/stage5_audio")
+CKPT_DIR      = Path("../Model_files/checkpoints_v2.3.2/stage5_audio")
 DATA_DIR      = Path("../Data/LLM_Data_updated")
 AUDIO_CACHE   = "../Data/audio_feats_cache_neox"
 PROJ_CKPT     = "../Model_files/audio_proj_training/audio_proj_best.pt"

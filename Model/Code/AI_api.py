@@ -225,7 +225,7 @@ def generate_safe_text(input_ids, audio_out, max_attempts=3, **gen_kwargs):
 
 def generate_text(input_ids: torch.Tensor, audio_out: torch.Tensor,
                   max_new_tokens: int = 150,
-                  temperature: float = 0.4,
+                  temperature: float = 0.8,
                   top_p: float = 0.9,
                   repetition_penalty=1.2, 
                   no_repeat_ngram_size=3) -> str:

@@ -37,9 +37,9 @@ import LatentMoE
 # 1.  PATHS AND STAGE CONFIG
 # ════════════════════════════════════════════════════════════════════════════
 
-DATA_DIR  = Path("./../Data/LLM_Data_updated")
-CKPT_DIR  = Path("./../Model_files/checkpoints_v2.3.1")
-LOG_DIR   = Path("./../Data/logs_v2.3.1")
+DATA_DIR  = Path("./../Data/LLM_DATA_v2.3.2")
+CKPT_DIR  = Path("./../Model_files/checkpoints_v2.3.2")
+LOG_DIR   = Path("./../Data/logs_v2.3.2")
 
 # add near top with other constants
 SPECIAL_TOKENS = {
@@ -622,6 +622,21 @@ def get_lr(step: int, warmup_steps: int, total_steps: int, max_lr: float,
 # 6.  TRAINING LOOP
 # ════════════════════════════════════════════════════════════════════════════
 
+def build_param_groups(model, weight_decay):
+    decay, no_decay = [], []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.ndim < 2 or "gate" in name.lower() or "bias" in name.lower() or "norm" in name.lower():
+            no_decay.append(param)
+        else:
+            decay.append(param)
+    return [
+        {"params": decay, "weight_decay": weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+
+
 def train(stage: int, resume: Optional[str] = None):
     cfg      = STAGE_CONFIG[stage]
     ckpt_dir = CKPT_DIR / f"stage{stage}"
@@ -686,16 +701,24 @@ def train(stage: int, resume: Optional[str] = None):
 
         # Extend output projection + embedding if checkpoint was vocab_size=50277
         for key in list(state.keys()):
-            if state[key].shape != model.state_dict()[key].shape:
-                old = state[key]
-                new = model.state_dict()[key].clone()
-                # Copy old weights into the new (larger) tensor
-                slices = tuple(slice(0, s) for s in old.shape)
-                new[slices] = old
-                state[key] = new
-                print(f"  Extended {key}: {old.shape} -> {new.shape}")
-        
-        model.load_state_dict(ckpt["model"])
+            if key not in model.state_dict():
+                del state[key]
+                continue
+            old = state[key]
+            new_shape = model.state_dict()[key].shape
+            if old.shape == new_shape:
+                continue
+            if old.dim() != len(new_shape):
+                print(f"  Skipping {key}: dim mismatch {old.shape} vs {new_shape} -- reinitializing")
+                del state[key]
+                continue
+            new = model.state_dict()[key].clone()
+            slices = tuple(slice(0, min(o, n)) for o, n in zip(old.shape, new_shape))
+            new[slices] = old[slices]
+            state[key] = new
+            print(f"  Extended {key}: {old.shape} -> {new_shape}")
+
+        model.load_state_dict(state, strict=False)
         
         with torch.no_grad():
             ids = tok.encode("The little dog ran", return_tensors="pt").to(device)
@@ -760,8 +783,9 @@ def train(stage: int, resume: Optional[str] = None):
     
     if HAS_BNB:
         print(f"  Optimizer: AdamW8bit (bitsandbytes) — saves ~2 GB VRAM")
+        param_groups = build_param_groups(model, weight_decay=0.1)
         optimizer = AdamW8bit(
-            model.parameters(),
+            param_groups,
             lr=cfg["lr"],
             betas=(0.9, 0.95),
             weight_decay=0.1,
@@ -769,8 +793,9 @@ def train(stage: int, resume: Optional[str] = None):
         )
     else:
         print("  Optimizer: AdamW (install bitsandbytes for 8-bit Adam)")
+        param_groups = build_param_groups(model, weight_decay=0.1)
         optimizer = torch.optim.AdamW(
-            model.parameters(),
+            param_groups,
             lr=cfg["lr"],
             betas=(0.9, 0.95),
             weight_decay=0.1,
@@ -779,8 +804,14 @@ def train(stage: int, resume: Optional[str] = None):
         )
     # ── resume ───────────────────────────────────────────────────────
     if resume_optimizer_state is not None:
-        optimizer.load_state_dict(resume_optimizer_state)
-        print(f"  Optimizer state restored")
+        RESTRUCTURED_PARAM_GROUPS = True  # flip to False once all your saved
+                                       # checkpoints postdate this change
+        if RESTRUCTURED_PARAM_GROUPS:
+            print("  Skipping old optimizer state load (param groups changed) "
+                "-- starting fresh Adam moments, model weights still resumed")
+        else:
+            optimizer.load_state_dict(resume_optimizer_state)
+            print("  Optimizer state restored")
 
     # ── Timing test ───────────────────────────────────────────────────────
     # if device.type == "cuda":
