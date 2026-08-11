@@ -43,6 +43,61 @@ def _parse_kv(line: str) -> Optional[tuple]:
         return None
     return m.group(1), m.group(2).strip()
 
+def _unquote(s):
+    s = s.strip()
+    if s.startswith('"') and s.endswith('"'):
+        return s[1:-1]
+    return s
+
+
+def _parse_short(lines):
+    # remove blank lines
+    lines = [l.strip() for l in lines if l.strip()]
+
+    i = 2  # skip header
+
+    xmin = float(lines[i]); i += 1
+    xmax = float(lines[i]); i += 1
+
+    assert lines[i] == "<exists>"
+    i += 1
+
+    n_tiers = int(lines[i])
+    i += 1
+
+    tiers = []
+
+    for _ in range(n_tiers):
+        tier_type = _unquote(lines[i]); i += 1
+        tier_name = _unquote(lines[i]); i += 1
+
+        tier_xmin = float(lines[i]); i += 1
+        tier_xmax = float(lines[i]); i += 1
+
+        n_intervals = int(lines[i]); i += 1
+
+        intervals = []
+
+        for _ in range(n_intervals):
+            ixmin = float(lines[i]); i += 1
+            ixmax = float(lines[i]); i += 1
+            text = _unquote(lines[i]); i += 1
+
+            intervals.append(
+                Interval(ixmin, ixmax, text)
+            )
+
+        tiers.append(
+            Tier(
+                name=tier_name,
+                xmin=tier_xmin,
+                xmax=tier_xmax,
+                intervals=intervals,
+            )
+        )
+
+    return tiers
+
 
 def parse_textgrid(path: str) -> List[Tier]:
     """
@@ -54,17 +109,14 @@ def parse_textgrid(path: str) -> List[Tier]:
     """
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         text = f.read()
+        
+    lines = text.splitlines()
 
     if "ooTextFile" not in text:
         raise ValueError(f"{path} does not look like a Praat TextGrid file")
-    if 'item [' not in text:
-        raise ValueError(
-            f"{path} looks like short-format TextGrid, which this parser "
-            f"does not handle. Re-export as long text format, or use your "
-            f"existing textgrid_utils.py for this file."
-        )
+    if 'File type = "ooTextFile short"' in text:
+        return _parse_short(lines)
 
-    lines = text.splitlines()
     tiers: List[Tier] = []
     i = 0
     n = len(lines)

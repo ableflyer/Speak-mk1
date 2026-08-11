@@ -29,11 +29,16 @@ def build_frame_targets(
 
     Returns a dict with keys: phone_id, voicing, manner, place -- each a
     list[int] of length num_frames. Frames not covered by any interval
-    (e.g. rounding gaps, or audio padding beyond the last interval) are
-    left at IGNORE_INDEX for the feature fields and PAD_TOKEN's id for
-    phone_id, so they never silently masquerade as a real phone.
+    (rounding gaps, or audio padding beyond the last interval) are left at
+    IGNORE_INDEX (-100) across ALL FOUR fields, matching the convention a
+    downstream cross_entropy(..., ignore_index=-100) head expects. Earlier
+    versions of this function defaulted phone_id to the vocab's <pad> id
+    (0) instead of -100 -- that meant a classification head would get
+    real (wrong) supervision on padded frames instead of having them
+    excluded, same class of bug as the padding issue on the other three
+    fields. Fixed here so phone_id behaves identically to the others.
     """
-    phone_id = [PHONE2IDX[PAD_TOKEN]] * num_frames
+    phone_id = [IGNORE_INDEX] * num_frames
     voicing = [IGNORE_INDEX] * num_frames
     manner = [IGNORE_INDEX] * num_frames
     place = [IGNORE_INDEX] * num_frames

@@ -198,7 +198,11 @@ def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         voicing[i, :n] = item["voicing"]
         manner[i, :n] = item["manner"]
         place[i, :n] = item["place"]
-        frame_lengths[i] = n
+
+        # n is the padded/truncated length from the Dataset, not the true
+        # valid length -- use item["valid_frames"] if the Dataset provides it,
+        # falling back to n only when it doesn't (i.e. items aren't pre-padded).
+        frame_lengths[i] = item.get("valid_frames", n) if isinstance(item, dict) else n
 
         p = item["phone_seq"].shape[0]
         phone_seq[i, :p] = item["phone_seq"]

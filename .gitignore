@@ -12,3 +12,10 @@ Model/Code/timit_maps.py
 .env
 backend/node_modules/
 frontend/node_modules/
+Model/Code/manifest.csv
+Model/Code/hf_release.py
+Model/Code/tester_out
+INSTALLATION_AND_SETUP.txt
+migrate_speak.sh
+Miniconda3-latest-Linux-x86_64.sh
+mamba/

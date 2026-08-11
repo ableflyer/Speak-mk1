@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sampa_phone_table import PAD_TOKEN, PHONE2IDX, PHONE_VOCAB
 from UniMamba import UniMamba, RMSNorm
 from BiMamba import BiMamba
 from LatentMoE import LatentMoE
@@ -135,16 +136,18 @@ class PhonologicalHead(nn.Module):
 
 
 class SharedPhonologicalLayer(nn.Module):
+
     HEADS = {
-        "voicing":     2,
-        "manner":      8,
-        "ctc":         40,
-        "place":       7,
+        "voicing": 2,
+        "manner": 9,
+        "ctc": 48,
+        "place": 13,
         "correctness": 2,
     }
 
     def __init__(self, d_model: int, training_heads: bool = True):
         super().__init__()
+
         self.norm = RMSNorm(d_model)
         self.proj = nn.Linear(d_model, d_model)
         self.training_heads = training_heads
@@ -154,33 +157,73 @@ class SharedPhonologicalLayer(nn.Module):
                 name: PhonologicalHead(d_model, n_cls)
                 for name, n_cls in self.HEADS.items()
             })
+        CTC_BLANK_ID = PHONE2IDX[PAD_TOKEN]
+        self.ctc_loss = nn.CTCLoss(
+            blank=CTC_BLANK_ID,          # IMPORTANT: see note below
+            zero_infinity=True,
+        )
 
     def forward(self, x, labels=None):
+
         normed = self.norm(x)
         projected = self.proj(F.silu(normed))
-        x = x + projected 
+        x = x + projected
 
-        losses = None
-        if self.training_heads and labels is not None:
-            losses = {}
+        logits_dict = {}
+
+        if self.training_heads:
             for name, head in self.heads.items():
-                if name in labels:
-                    logits = head(normed)                          # (B, T, C)
-                    tgt = labels[name]                        # (B, T)
-                    n_classes = logits.size(-1)
-                    
-                    # Fix: ensure padding is exactly -100 and nothing else
-                    # is out of range. Clamp valid labels to [0, n_classes-1]
-                    valid_mask = tgt != -100
-                    tgt = tgt.clone()
-                    tgt[valid_mask] = tgt[valid_mask].clamp(0, n_classes - 1)
-                    
-                    losses[name] = F.cross_entropy(
-                        logits.reshape(-1, n_classes),
-                        tgt.reshape(-1),
-                        ignore_index=-100,
+                logits_dict[name] = head(normed)
+
+        losses = {}
+
+        if labels is not None:
+
+            # ─────────────────────────────────────────────
+            # CTC
+            # ─────────────────────────────────────────────
+
+            if "ctc" in labels:
+
+                ctc_logits = logits_dict["ctc"]
+                # (B, T, V)
+                input_lengths = labels["input_lengths"]
+                target = labels["ctc"]
+                target_lengths = labels["ctc_lengths"]
+
+                with torch.autocast(device_type="cuda", enabled=False):
+                    log_probs = F.log_softmax(ctc_logits.float(), dim=-1)
+                    # CTCLoss expects (T, B, V)
+                    log_probs = log_probs.transpose(0, 1)
+
+                    losses["ctc"] = self.ctc_loss(
+                        log_probs,
+                        target,
+                        input_lengths,
+                        target_lengths,
                     )
-        return x, losses
+
+            # ─────────────────────────────────────────────
+            # Frame-level heads
+            # ─────────────────────────────────────────────
+
+            for name in ("voicing", "manner", "place", "correctness"):
+
+                if name not in labels:
+                    continue
+
+                logits = logits_dict[name]
+                tgt = labels[name]
+
+                n_classes = logits.size(-1)
+
+                losses[name] = F.cross_entropy(
+                    logits.reshape(-1, n_classes),
+                    tgt.reshape(-1),
+                    ignore_index=-100,
+                )
+
+        return x, logits_dict, losses
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -416,12 +459,23 @@ class AudioEncoder(nn.Module):
             x = layer(x, attention_mask=attention_mask)
 
         # ── 5. Shared Phonological Layer ──────────────────────────────────
-        x, losses = self.phonological(x, labels=labels)
+        x, phonological_logits, losses = self.phonological(
+            x,
+            labels=labels
+        )
 
         # ── 6. Q-Former Projection → fixed LLM token budget ───────────────
         llm_tokens = self.qformer(x, memory_key_padding_mask=pad_mask)
 
-        return llm_tokens, losses
+        return {
+            "llm_tokens": llm_tokens,
+            "ctc_logits": phonological_logits["ctc"],
+            "voicing_logits": phonological_logits["voicing"],
+            "manner_logits": phonological_logits["manner"],
+            "place_logits": phonological_logits["place"],
+            "correctness_logits": phonological_logits["correctness"],
+            "losses": losses,
+        }
 
     @torch.no_grad()
     def encode(self, audio_input: torch.Tensor,
