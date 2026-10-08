@@ -426,7 +426,7 @@ class AudioEncoder(nn.Module):
         x = self.rms_att(x, key_padding_mask=pad_mask)
         for layer in self.bi_mamba_moe_layers:
             x = layer(x)
-        x, _ = self.phonological(x)
+        x, _logits, _losses = self.phonological(x)
         return x   # (B, T, d_model) — feeds into DirectAudioProjection
 
     def forward(

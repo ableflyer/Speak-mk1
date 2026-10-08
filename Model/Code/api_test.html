@@ -524,7 +524,10 @@
           <div class="audio-filename" id="fbAudioName"></div>
         </div>
       </div>
-      <button class="submit-btn" id="fbBtn" onclick="callFeedback()">Send Feedback Request</button>
+      <div style="font-size:0.7rem;color:var(--muted);margin:0.25rem 0 0.75rem;line-height:1.5">
+        Sentence streaming is enabled. Each generated sentence is sent to speech and queued for playback.
+      </div>
+      <button class="submit-btn" id="fbBtn" onclick="callFeedback()">Send Streaming Feedback</button>
     </div>
   </div>
 
@@ -782,6 +785,41 @@
     $(barId).style.width = val !== undefined && val !== null ? `${Math.min(val, 100)}%` : '0%';
   }
 
+  // ── Streaming audio playback ──────────────────────────────────────────
+  const feedbackAudioQueue = [];
+  let feedbackAudioPlaying = false;
+  let currentFeedbackAudio = null;
+
+  $('fbAudioPlayer').addEventListener('ended', () => {
+    if (currentFeedbackAudio) URL.revokeObjectURL(currentFeedbackAudio.url);
+    currentFeedbackAudio = null;
+    feedbackAudioPlaying = false;
+    playNextFeedbackAudio();
+  });
+
+  function playNextFeedbackAudio() {
+    if (feedbackAudioPlaying || feedbackAudioQueue.length === 0) return;
+    const audioEl = $('fbAudioPlayer');
+    currentFeedbackAudio = feedbackAudioQueue.shift();
+    feedbackAudioPlaying = true;
+    $('fbAudioWrap').style.display = 'flex';
+    audioEl.src = currentFeedbackAudio.url;
+    audioEl.load();
+    audioEl.play().catch(() => {
+      // Keep the native controls available if the browser blocks autoplay.
+      feedbackAudioPlaying = false;
+    });
+  }
+
+  function queueFeedbackAudio(base64Wav) {
+    const binary = atob(base64Wav);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+    feedbackAudioQueue.push({ url });
+    playNextFeedbackAudio();
+  }
+
   // ── /health ────────────────────────────────────────────────────────────
   async function pingHealth() {
     const dot = $('statusDot');
@@ -817,6 +855,21 @@
     const audioFile = $('fb_audio').files[0];
     let body, headers = {};
     const t0 = Date.now();
+    const streamEvents = [];
+    let responseText = '';
+    feedbackAudioQueue.splice(0).forEach(item => URL.revokeObjectURL(item.url));
+    if (currentFeedbackAudio) URL.revokeObjectURL(currentFeedbackAudio.url);
+    currentFeedbackAudio = null;
+    feedbackAudioPlaying = false;
+    const audioEl = $('fbAudioPlayer');
+    audioEl.pause();
+    audioEl.removeAttribute('src');
+    $('fbAudioWrap').style.display = 'none';
+    $('fbText').textContent = '';
+    $('rawJson').textContent = '';
+    showResponse();
+    $('scResult').style.display = 'none';
+    $('fbResult').style.display = 'block';
 
     if (audioFile) {
       const fd = new FormData();
@@ -826,6 +879,7 @@
       fd.append('accuracy',      $('fb_accuracy').value);
       fd.append('childAge',      $('fb_childAge').value);
       fd.append('focusArea',     $('fb_focusArea').value);
+      fd.append('stream',        'true');
       fd.append('audio',         audioFile);
       body = fd;
     } else {
@@ -837,56 +891,68 @@
         accuracy:      parseFloat($('fb_accuracy').value),
         childAge:      parseInt($('fb_childAge').value),
         focusArea:     $('fb_focusArea').value,
+        stream:        true,
       });
     }
 
     try {
       const r = await fetch(`${getBase()}/api/ai/feedback`, { method: 'POST', headers, body });
-      const ms = Date.now() - t0;
-      const data = await r.json();
-      addLog('POST', '/api/ai/feedback', r.status, ms);
-      $('responseTime').textContent = `${ms}ms`;
-
-      if (!r.ok || data.error) {
-        showError(data.error || `HTTP ${r.status}`);
-        $('rawJson').innerHTML = highlight(data);
-        showResponse();
-      } else {
-        showResponse();
-        $('scResult').style.display = 'none';
-        $('fbResult').style.display = 'block';
-
-        // Text
-        $('fbText').textContent = data.text || '(empty response)';
-
-        // Audio
-        if (data.audio) {
-          const audioEl = $('fbAudioPlayer');
-          audioEl.src = `data:audio/wav;base64,${data.audio}`;
-          $('fbAudioWrap').style.display = 'flex';
-          audioEl.load();
-        } else {
-          $('fbAudioWrap').style.display = 'none';
-        }
-
-        // Phoneme scores
-        const ps = data.phoneme_scores || {};
-        setScore('fbVoicing', 'fbVoicingBar', ps.voicing);
-        setScore('fbManner',  'fbMannerBar',  ps.manner);
-        setScore('fbPlace',   'fbPlaceBar',   ps.place);
-
-        $('rawJson').innerHTML = highlight(data);
-        switchTab('output');
+      if (!r.ok) {
+        const message = await r.text();
+        throw new Error(message || `HTTP ${r.status}`);
       }
+
+      if (!r.body) throw new Error('This browser does not support streaming responses.');
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = '';
+
+      function handleEvent(event) {
+        streamEvents.push(event);
+        if (event.type === 'sentence') {
+          responseText += `${responseText ? ' ' : ''}${event.text || ''}`;
+          $('fbText').textContent = responseText;
+          if (event.audio) queueFeedbackAudio(event.audio);
+        } else if (event.type === 'done') {
+          responseText = event.text || responseText;
+          $('fbText').textContent = responseText || '(empty response)';
+          const ps = event.phoneme_scores || {};
+          setScore('fbVoicing', 'fbVoicingBar', ps.voicing);
+          setScore('fbManner', 'fbMannerBar', ps.manner);
+          setScore('fbPlace', 'fbPlaceBar', ps.place);
+        } else if (event.type === 'error') {
+          const banner = $('errorBanner');
+          banner.textContent = `⚠ ${event.error || 'Streaming error'}`;
+          banner.classList.add('visible');
+        }
+        $('rawJson').innerHTML = highlight(streamEvents);
+      }
+
+      while (true) {
+        const { value, done } = await reader.read();
+        pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const lines = pending.split('\n');
+        pending = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try { handleEvent(JSON.parse(line)); }
+          catch (parseError) { throw new Error(`Invalid stream event: ${parseError.message}`); }
+        }
+        if (done) break;
+      }
+      if (pending.trim()) handleEvent(JSON.parse(pending));
+      addLog('POST', '/api/ai/feedback (stream)', r.status, Date.now() - t0);
+      $('responseTime').textContent = `${Date.now() - t0}ms`;
+      switchTab('output');
     } catch (e) {
       const ms = Date.now() - t0;
-      addLog('POST', '/api/ai/feedback', 0, ms);
+      addLog('POST', '/api/ai/feedback (stream)', 0, ms);
       showError(`Network error: ${e.message}. Is the server running at ${getBase()}?`);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.textContent = 'Send Streaming Feedback';
     }
-
-    btn.disabled = false;
-    btn.classList.remove('loading');
-    btn.textContent = 'Send Feedback Request';
   }
 
   // ── /api/ai/score ──────────────────────────────────────────────────────

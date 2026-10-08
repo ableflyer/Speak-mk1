@@ -5,7 +5,9 @@ import numpy as np
 import torch
 import librosa
 import soundfile as sf
-from flask import Flask, request, jsonify
+import subprocess
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from transformers import AutoTokenizer
 import sys
@@ -22,7 +24,7 @@ from kokoro_onnx import Kokoro
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SAMPLE_RATE = 16000
 
-ENCODER_PATH  = "../Model_files/Audio_encoder_v1.1/audio_encoder_epoch_5.pt"
+ENCODER_PATH  = "../Model_files/Audio_encoder_v1.5/audio_encoder_best_per.pt"
 PROJ_PATH     = "../Model_files/audio_proj_training/audio_proj_best.pt"
 LLM_PATH      = "../Model_files/checkpoints_v2.3.2/stage4/ckpt_final.pt"
 KOKORO_MODEL  = "../Model_files/kokoro-onnx-models/kokoro-v1.0.onnx"
@@ -267,6 +269,55 @@ def text_to_audio_b64(text: str) -> str:
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
+def sentence_chunks(input_ids, audio_out, max_new_tokens=150, temperature=0.8,
+                    top_p=0.9, repetition_penalty=1.2,
+                    no_repeat_ngram_size=3):
+    """Yield decoded SLP sentences as soon as punctuation closes them."""
+    generated = input_ids.clone()
+    prompt_length = input_ids.shape[1]
+    emitted = 0
+    # End a chunk after punctuation followed by whitespace, or at endturn/eos.
+    boundary = re.compile(r"[.!?][\"'”’)]*\s+")
+
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            logits, _, _ = llm(input_ids=generated, audio_out=audio_out,
+                               audio_padding_mask=None)
+            next_logits = logits[0, -1] / temperature
+            next_logits = apply_repetition_penalty(next_logits, generated,
+                                                   repetition_penalty)
+            for tok in get_banned_ngram_tokens(generated, no_repeat_ngram_size):
+                next_logits[tok] = -float("inf")
+            sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
+            sorted_probs = torch.softmax(sorted_logits, dim=-1)
+            mask = torch.cumsum(sorted_probs, dim=-1) - sorted_probs > top_p
+            sorted_logits[mask] = -float("inf")
+            probs = torch.softmax(sorted_logits, dim=-1)
+            next_token = sorted_indices[torch.multinomial(probs, 1)]
+            generated = torch.cat([generated, next_token.unsqueeze(0)], dim=-1)
+
+            new_ids = generated[0, prompt_length:]
+            decoded = tokenizer.decode(new_ids, skip_special_tokens=False)
+            # Keep internal control tokens out of spoken text.
+            decoded = re.split(r"<\|(?:think|endturn)\|>", decoded)[0]
+            for match in boundary.finditer(decoded, emitted):
+                sentence = decoded[emitted:match.end()].strip()
+                emitted = match.end()
+                if sentence:
+                    yield sentence
+            if next_token.item() == tokenizer.eos_token_id or "<|endturn|>" in tokenizer.decode(new_ids, skip_special_tokens=False):
+                break
+
+    tail = decoded[emitted:].strip()
+    if tail:
+        yield tail
+
+
+def ndjson_event(kind, **payload):
+    import json
+    return json.dumps({"type": kind, **payload}, ensure_ascii=False) + "\n"
+
+
 def build_prompt(transcription: str, target_phrase: str, target_sound: str,
                  accuracy: float, child_age: int, focus_area: str) -> str:
     system = (
@@ -351,7 +402,7 @@ def get_pre_phonological_features(mel):
 def phoneme_scores_from_features(mel: torch.Tensor) -> dict:
     with torch.no_grad():
         pre_phon = get_pre_phonological_features(mel)   # (B, T, 512) — separate branch
-        phon_out, _ = encoder.phonological(pre_phon)
+        phon_out, _, _ = encoder.phonological(pre_phon)
 
         scores = {}
         for name, head in encoder.phonological.heads.items():
@@ -402,6 +453,7 @@ def feedback():
             child_age     = int(request.form.get("childAge", 6) or 6)
             focus_area    = request.form.get("focusArea", "")
             audio_file    = request.files.get("audio")
+            stream_audio  = request.form.get("stream", "").lower() in {"1", "true", "yes"}
         else:
             data          = request.get_json(force=True) or {}
             transcription = data.get("transcription", "")
@@ -411,6 +463,7 @@ def feedback():
             child_age     = int(data.get("childAge") or 6)
             focus_area    = data.get("focusArea", "")
             audio_file    = None
+            stream_audio  = bool(data.get("stream", False))
 
         # ── Audio encode (if audio provided, else use silent placeholder) ─
         with torch.no_grad():
@@ -445,6 +498,38 @@ def feedback():
             prompt    = build_prompt(transcription, target_phrase, target_sound,
                                      accuracy, child_age, focus_area)
             input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(DEVICE)
+            if stream_audio:
+                def stream_events():
+                    spoken_text = ""
+                    # Check each sentence plus a short tail from the previous one,
+                    # so prohibited phrases split across a boundary are caught.
+                    try:
+                        for sentence in sentence_chunks(input_ids, audio_out):
+                            candidate = (spoken_text[-40:] + " " + sentence).strip()
+                            if not is_safe_output(candidate):
+                                if not spoken_text:
+                                    fallback_audio = text_to_audio_b64(FALLBACK_RESPONSE)
+                                    yield ndjson_event("sentence", text=FALLBACK_RESPONSE,
+                                                       audio=fallback_audio)
+                                    spoken_text = FALLBACK_RESPONSE
+                                else:
+                                    yield ndjson_event("error", error="Unsafe generated sentence omitted.")
+                                break
+                            spoken_text = (spoken_text + " " + sentence).strip()
+                            yield ndjson_event("sentence", text=sentence,
+                                               audio=text_to_audio_b64(sentence))
+                        yield ndjson_event("done", text=spoken_text,
+                                           phoneme_scores=phoneme_scores,
+                                           prompt_used=prompt)
+                    except Exception as stream_error:
+                        traceback.print_exc()
+                        yield ndjson_event("error", error=str(stream_error))
+
+                return Response(stream_with_context(stream_events()),
+                                mimetype="application/x-ndjson",
+                                headers={"Cache-Control": "no-cache",
+                                         "X-Accel-Buffering": "no"})
+
             slp_response, full_output, passed_filter = generate_safe_text(input_ids, audio_out)
             print(full_output)
 
@@ -536,6 +621,18 @@ def score():
 # ── Entry point ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    load_models()
+    load_dotenv()
+    ngrok_url = os.getenv("NGROK_LINK")
+    if not ngrok_url:
+        print("Error: NGROK_LINK environment variable not set.", file=sys.stderr)
+        sys.exit(1)
     # debug=False keeps Flask from loading models twice
+    
+    load_models()
+    subprocess.Popen([
+        "ngrok",
+        "http",
+        "5000",
+        "--url", ngrok_url
+    ])
     app.run(host="0.0.0.0", port=5000, debug=False)
