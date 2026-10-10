@@ -38,8 +38,8 @@ import LatentMoE
 # ════════════════════════════════════════════════════════════════════════════
 
 DATA_DIR  = Path("./../Data/LLM_DATA_v2.3.2")
-CKPT_DIR  = Path("./../Model_files/checkpoints_v2.3.2")
-LOG_DIR   = Path("./../Data/logs_v2.3.2")
+CKPT_DIR  = Path("./../Model_files/checkpoints_v2.3.3")
+LOG_DIR   = Path("./../Data/logs_v2.3.3")
 
 # add near top with other constants
 SPECIAL_TOKENS = {

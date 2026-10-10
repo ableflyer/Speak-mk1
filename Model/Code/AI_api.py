@@ -26,7 +26,7 @@ SAMPLE_RATE = 16000
 
 ENCODER_PATH  = "../Model_files/Audio_encoder_v1.5/audio_encoder_best_per.pt"
 PROJ_PATH     = "../Model_files/audio_proj_training/audio_proj_best.pt"
-LLM_PATH      = "../Model_files/checkpoints_v2.3.2/stage4/ckpt_final.pt"
+LLM_PATH      = "../Model_files/checkpoints_v2.3.3/stage4/ckpt_final.pt"
 KOKORO_MODEL  = "../Model_files/kokoro-onnx-models/kokoro-v1.0.onnx"
 KOKORO_VOICES = "../Model_files/kokoro-onnx-models/voices-v1.0.bin"
 
